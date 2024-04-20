@@ -223,7 +223,9 @@ func (u *MapUDFProcessor) Start(ctx context.Context) error {
 		if x := u.VertexInstance.Vertex.Spec.Limits; x != nil {
 			if x.ReadBatchSize != nil {
 				opts = append(opts, forward.WithReadBatchSize(int64(*x.ReadBatchSize)))
-				opts = append(opts, forward.WithUDFConcurrency(int(*x.ReadBatchSize)))
+				// TODO: Set back, and/or figure out how to make this work with a separate option?
+				// opts = append(opts, forward.WithUDFConcurrency(int(*x.ReadBatchSize)))
+				opts = append(opts, forward.WithUDFConcurrency(int(1)))
 			}
 		}
 		// create a forwarder for each partition

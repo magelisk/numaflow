@@ -257,6 +257,13 @@ func (isdf *InterStepDataForward) forwardAChunk(ctx context.Context) {
 
 	var writeOffsets map[string][][]isb.Offset
 	if !isdf.opts.enableMapUdfStream {
+		// Default, event message individually vs batched together
+		if !isdf.opts.enabledBatchedMap {
+
+		} else {
+
+		}
+
 		// create space for writeMessages specific to each step as we could forward to all the steps too.
 		var messageToStep = make(map[string][][]isb.Message)
 		for toVertex := range isdf.toBuffers {
@@ -633,14 +640,17 @@ func (isdf *InterStepDataForward) writeToBuffer(ctx context.Context, toBufferPar
 
 // concurrentApplyUDF applies the map UDF based on the request from the channel
 func (isdf *InterStepDataForward) concurrentApplyUDF(ctx context.Context, readMessagePair <-chan *readWriteMessagePair) {
+	var numMsgs int = 0
 	for message := range readMessagePair {
 		start := time.Now()
+		isdf.opts.logger.Infow("MDW: Proc message", "msgNum", numMsgs)
 		metrics.UDFReadMessagesCount.With(map[string]string{metrics.LabelVertex: isdf.vertexName, metrics.LabelPipeline: isdf.pipelineName, metrics.LabelVertexType: string(dfv1.VertexTypeMapUDF), metrics.LabelVertexReplicaIndex: strconv.Itoa(int(isdf.vertexReplica)), metrics.LabelPartitionName: isdf.fromBufferPartition.GetName()}).Inc()
 		writeMessages, err := isdf.applyUDF(ctx, message.readMessage)
 		metrics.UDFWriteMessagesCount.With(map[string]string{metrics.LabelVertex: isdf.vertexName, metrics.LabelPipeline: isdf.pipelineName, metrics.LabelVertexType: string(dfv1.VertexTypeMapUDF), metrics.LabelVertexReplicaIndex: strconv.Itoa(int(isdf.vertexReplica)), metrics.LabelPartitionName: isdf.fromBufferPartition.GetName()}).Add(float64(len(writeMessages)))
 		message.writeMessages = append(message.writeMessages, writeMessages...)
 		message.udfError = err
 		metrics.UDFProcessingTime.With(map[string]string{metrics.LabelVertex: isdf.vertexName, metrics.LabelPipeline: isdf.pipelineName, metrics.LabelVertexType: string(dfv1.VertexTypeMapUDF), metrics.LabelVertexReplicaIndex: strconv.Itoa(int(isdf.vertexReplica))}).Observe(float64(time.Since(start).Microseconds()))
+		numMsgs += 1
 	}
 }
 

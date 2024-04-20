@@ -37,6 +37,8 @@ type options struct {
 	logger *zap.SugaredLogger
 	// enableMapUdfStream indicates whether the message streaming is enabled or not for map UDF processing
 	enableMapUdfStream bool
+	// enabledMatchedMap indicates whether to send messages as a single batch instead of as individual messages
+	enabledBatchedMap bool
 }
 
 type Option func(*options) error
@@ -48,6 +50,8 @@ func DefaultOptions() *options {
 		retryInterval:      time.Millisecond,
 		logger:             logging.NewLogger(),
 		enableMapUdfStream: false,
+		// TODO: magelisk: Should be false by default
+		enabledBatchedMap: true,
 	}
 }
 
@@ -87,6 +91,13 @@ func WithLogger(l *zap.SugaredLogger) Option {
 func WithUDFStreaming(f bool) Option {
 	return func(o *options) error {
 		o.enableMapUdfStream = f
+		return nil
+	}
+}
+
+func WithBatchedMapping(b bool) Option {
+	return func(o *options) error {
+		o.enabledBatchedMap = b
 		return nil
 	}
 }
