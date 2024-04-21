@@ -2,6 +2,8 @@ module github.com/numaproj/numaflow
 
 go 1.20
 
+replace github.com/numaproj/numaflow-go => ../numaflow-go
+
 require (
 	github.com/IBM/sarama v1.43.0
 	github.com/Masterminds/sprig/v3 v3.2.2
@@ -215,3 +217,5 @@ require (
 	sigs.k8s.io/json v0.0.0-20220713155537-f223a00ba0e2 // indirect
 	sigs.k8s.io/structured-merge-diff/v4 v4.2.3 // indirect
 )
+
+// replace github.com/numaproj/numaflow-go v0.5.3-0.20231208052731-3d4d17004cc9 => github.com/magelisk/numaflow-go v0.0.0-20240420105904-23f418657452fd88cf36eb89fb0b9ebcd772ac9d
