@@ -70,6 +70,7 @@ func (u *MapUDFProcessor) Start(ctx context.Context) error {
 		fromVertexWmStores map[string]store.WatermarkStore
 		toVertexWmStores   map[string]store.WatermarkStore
 		mapHandler         *rpc.GRPCBasedMap
+		mapBatchHandler    *rpc.GRPCBasedMapBatch
 		mapStreamHandler   *rpc.GRPCBasedMapStream
 		idleManager        wmb.IdleManager
 	)
@@ -229,7 +230,7 @@ func (u *MapUDFProcessor) Start(ctx context.Context) error {
 			}
 		}
 		// create a forwarder for each partition
-		df, err := forward.NewInterStepDataForward(u.VertexInstance, readers[index], writers, conditionalForwarder, mapHandler, mapStreamHandler, fetchWatermark, publishWatermark, idleManager, opts...)
+		df, err := forward.NewInterStepDataForward(u.VertexInstance, readers[index], writers, conditionalForwarder, mapHandler, mapBatchHandler, mapStreamHandler, fetchWatermark, publishWatermark, idleManager, opts...)
 		if err != nil {
 			return err
 		}

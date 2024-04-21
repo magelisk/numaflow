@@ -21,23 +21,22 @@ import (
 	"fmt"
 	"time"
 
-	mappb "github.com/numaproj/numaflow-go/pkg/apis/proto/map/v1"
+	mapbpb "github.com/numaproj/numaflow-go/pkg/apis/proto/mapbatch/v1"
 	"google.golang.org/protobuf/types/known/emptypb"
-	"google.golang.org/protobuf/types/known/timestamppb"
 	"k8s.io/apimachinery/pkg/util/wait"
 
 	"github.com/numaproj/numaflow/pkg/isb"
 	sdkerr "github.com/numaproj/numaflow/pkg/sdkclient/error"
-	"github.com/numaproj/numaflow/pkg/sdkclient/mapper"
+	"github.com/numaproj/numaflow/pkg/sdkclient/mapbatch"
 	"github.com/numaproj/numaflow/pkg/shared/logging"
 )
 
 // GRPCBasedMap is a map applier that uses gRPC client to invoke the map UDF. It implements the applier.MapApplier interface.
 type GRPCBasedMapBatch struct {
-	client mapper.Client
+	client mapbatch.Client
 }
 
-func NewUDSgRPCBasedMapBatch(client mapper.Client) *GRPCBasedMapBatch {
+func NewUDSgRPCBasedMapBatch(client mapbatch.Client) *GRPCBasedMapBatch {
 	return &GRPCBasedMapBatch{client: client}
 }
 
@@ -69,18 +68,18 @@ func (u *GRPCBasedMapBatch) WaitUntilReady(ctx context.Context) error {
 	}
 }
 
-func (u *GRPCBasedMapBatch) ApplyMap(ctx context.Context, readMessage *isb.ReadMessage) ([]*isb.WriteMessage, error) {
-	keys := readMessage.Keys
-	payload := readMessage.Body.Payload
-	parentMessageInfo := readMessage.MessageInfo
-	var req = &mappb.MapRequest{
-		Keys:      keys,
-		Value:     payload,
-		EventTime: timestamppb.New(parentMessageInfo.EventTime),
-		Watermark: timestamppb.New(readMessage.Watermark),
-	}
-
-	response, err := u.client.MapFn(ctx, req)
+func (u *GRPCBasedMapBatch) ApplyMapBatch(ctx context.Context, readMessage []*isb.ReadMessage) ([]*isb.WriteMessage, error) {
+	// keys := readMessage.Keys
+	// payload := readMessage.Body.Payload
+	parentMessageInfo := readMessage[0].MessageInfo
+	// var req = &mappb.MapRequest{
+	// 	Keys:      keys,
+	// 	Value:     payload,
+	// 	EventTime: timestamppb.New(parentMessageInfo.EventTime),
+	// 	Watermark: timestamppb.New(readMessage.Watermark),
+	// }
+	var req = &mapbpb.MapBatchRequest{}
+	response, err := u.client.MapBatchFn(ctx, req)
 	if err != nil {
 		udfErr, _ := sdkerr.FromError(err)
 		switch udfErr.ErrorKind() {
@@ -93,7 +92,7 @@ func (u *GRPCBasedMapBatch) ApplyMap(ctx context.Context, readMessage *isb.ReadM
 				Jitter:   0.1,
 				Steps:    5,
 			}, func() (done bool, err error) {
-				response, err = u.client.MapFn(ctx, req)
+				response, err = u.client.MapBatchFn(ctx, req)
 				if err != nil {
 					udfErr, _ = sdkerr.FromError(err)
 					switch udfErr.ErrorKind() {
