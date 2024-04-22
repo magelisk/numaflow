@@ -7,8 +7,8 @@ import (
 	"testing"
 
 	"github.com/golang/mock/gomock"
-	mappb "github.com/numaproj/numaflow-go/pkg/apis/proto/map/v1"
-	"github.com/numaproj/numaflow-go/pkg/apis/proto/map/v1/mapmock"
+	mapbpb "github.com/numaproj/numaflow-go/pkg/apis/proto/mapbatch/v1"
+	"github.com/numaproj/numaflow-go/pkg/apis/proto/mapbatch/v1/mapbatchmock"
 	"github.com/stretchr/testify/assert"
 	"google.golang.org/protobuf/types/known/emptypb"
 )
@@ -19,9 +19,9 @@ func TestClient_IsReady(t *testing.T) {
 	ctrl := gomock.NewController(t)
 	defer ctrl.Finish()
 
-	mockClient := mapmock.NewMockMapClient(ctrl)
-	mockClient.EXPECT().IsReady(gomock.Any(), gomock.Any()).Return(&mappb.ReadyResponse{Ready: true}, nil)
-	mockClient.EXPECT().IsReady(gomock.Any(), gomock.Any()).Return(&mappb.ReadyResponse{Ready: false}, fmt.Errorf("mock connection refused"))
+	mockClient := mapbatchmock.NewMockMapBatchClient(ctrl)
+	mockClient.EXPECT().IsReady(gomock.Any(), gomock.Any()).Return(&mapbpb.ReadyResponse{Ready: true}, nil)
+	mockClient.EXPECT().IsReady(gomock.Any(), gomock.Any()).Return(&mapbpb.ReadyResponse{Ready: false}, fmt.Errorf("mock connection refused"))
 
 	testClient, err := NewFromClient(mockClient)
 	assert.NoError(t, err)
@@ -44,15 +44,15 @@ func TestClient_MapFn(t *testing.T) {
 	ctrl := gomock.NewController(t)
 	defer ctrl.Finish()
 
-	mockClient := mapmock.NewMockMapClient(ctrl)
-	mockClient.EXPECT().MapFn(gomock.Any(), gomock.Any()).Return(&mappb.MapResponse{Results: []*mappb.MapResponse_Result{
+	mockClient := mapbatchmock.NewMockMapBatchClient(ctrl)
+	mockClient.EXPECT().MapBatchFn(gomock.Any(), gomock.Any()).Return(&mapbpb.MapBatchResponse{Results: []*mapbpb.MapBatchResponse_Result{
 		{
 			Keys:  []string{"temp-key"},
 			Value: []byte("mock result"),
 			Tags:  nil,
 		},
 	}}, nil)
-	mockClient.EXPECT().MapFn(gomock.Any(), gomock.Any()).Return(&mappb.MapResponse{Results: []*mappb.MapResponse_Result{
+	mockClient.EXPECT().MapFn(gomock.Any(), gomock.Any()).Return(&mapbpb.MapBatchResponse{Results: []*mapbpb.MapBatchResponse_Result{
 		{
 			Keys:  []string{"temp-key"},
 			Value: []byte("mock result"),
@@ -66,8 +66,8 @@ func TestClient_MapFn(t *testing.T) {
 		grpcClt: mockClient,
 	})
 
-	result, err := testClient.MapFn(ctx, &mappb.MapRequest{})
-	assert.Equal(t, &mappb.MapResponse{Results: []*mappb.MapResponse_Result{
+	result, err := testClient.MapBatchFn(ctx, &mapbpb.MapBatchRequest{})
+	assert.Equal(t, &mapbpb.MapBatchResponse{Results: []*mapbpb.MapBatchResponse_Result{
 		{
 			Keys:  []string{"temp-key"},
 			Value: []byte("mock result"),
@@ -76,6 +76,6 @@ func TestClient_MapFn(t *testing.T) {
 	}}, result)
 	assert.NoError(t, err)
 
-	_, err = testClient.MapFn(ctx, &mappb.MapRequest{})
+	_, err = testClient.MapBatchFn(ctx, &mapbpb.MapBatchRequest{})
 	assert.EqualError(t, err, "NonRetryable: mock connection refused")
 }

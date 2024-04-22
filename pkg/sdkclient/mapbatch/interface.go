@@ -19,7 +19,6 @@ package mapbatch
 import (
 	"context"
 
-	mappb "github.com/numaproj/numaflow-go/pkg/apis/proto/map/v1"
 	mapbpb "github.com/numaproj/numaflow-go/pkg/apis/proto/mapbatch/v1"
 	"google.golang.org/protobuf/types/known/emptypb"
 )
@@ -28,5 +27,5 @@ import (
 type Client interface {
 	CloseConn(ctx context.Context) error
 	IsReady(ctx context.Context, in *emptypb.Empty) (bool, error)
-	MapBatchFn(ctx context.Context, mapRequest *mapbpb.MapBatchRequest) (*mappb.MapResponse, error)
+	MapBatchFn(ctx context.Context, mapRequest *mapbpb.MapBatchRequest) (*mapbpb.MapBatchResponse, error)
 }

@@ -21,7 +21,6 @@ import (
 	"log"
 	"time"
 
-	mappb "github.com/numaproj/numaflow-go/pkg/apis/proto/map/v1"
 	mapbpb "github.com/numaproj/numaflow-go/pkg/apis/proto/mapbatch/v1"
 	"google.golang.org/grpc"
 	"google.golang.org/protobuf/types/known/emptypb"
@@ -97,9 +96,9 @@ func (c *client) IsReady(ctx context.Context, in *emptypb.Empty) (bool, error) {
 }
 
 // MapFn applies a function to each datum element.
-func (c *client) MapBatchFn(ctx context.Context, request *mapbpb.MapBatchRequest) (*mappb.MapResponse, error) {
+func (c *client) MapBatchFn(ctx context.Context, request *mapbpb.MapBatchRequest) (*mapbpb.MapBatchResponse, error) {
 	mapResponse, err := c.grpcClt.MapBatchFn(ctx, request)
-	err = util.ToUDFErr("c.grpcClt.MapFn", err)
+	err = util.ToUDFErr("c.grpcClt.MapBatchFn", err)
 	if err != nil {
 		return nil, err
 	}

@@ -28,6 +28,7 @@ import (
 	"github.com/numaproj/numaflow/pkg/isb"
 	"github.com/numaproj/numaflow/pkg/metrics"
 	"github.com/numaproj/numaflow/pkg/sdkclient"
+	"github.com/numaproj/numaflow/pkg/sdkclient/mapbatch"
 	"github.com/numaproj/numaflow/pkg/sdkclient/mapper"
 	"github.com/numaproj/numaflow/pkg/sdkclient/mapstreamer"
 	jsclient "github.com/numaproj/numaflow/pkg/shared/clients/nats"
@@ -127,6 +128,11 @@ func (u *MapUDFProcessor) Start(ctx context.Context) error {
 		return fmt.Errorf("failed to parse UDF map streaming metadata, %w", err)
 	}
 
+	enableMapUdfBatch, err := u.VertexInstance.Vertex.MapUdfBatchEnabled()
+	if err != nil {
+		return fmt.Errorf("failed to parse UDF map batch metadata, %w", err)
+	}
+
 	maxMessageSize := sharedutil.LookupEnvIntOr(dfv1.EnvGRPCMaxMessageSize, sdkclient.DefaultGRPCMaxMessageSize)
 	if enableMapUdfStream {
 		mapStreamClient, err := mapstreamer.New(mapstreamer.WithMaxMessageSize(maxMessageSize))
@@ -146,6 +152,23 @@ func (u *MapUDFProcessor) Start(ctx context.Context) error {
 			}
 		}()
 
+	} else if enableMapUdfBatch {
+		mapBatchClient, err := mapbatch.New(mapbatch.WithMaxMessageSize(maxMessageSize))
+		if err != nil {
+			return fmt.Errorf("failed to create map batc client, %w", err)
+		}
+		mapBatchHandler = rpc.NewUDSgRPCBasedMapBatch(mapBatchClient)
+
+		// Readiness check
+		if err := mapBatchHandler.WaitUntilReady(ctx); err != nil {
+			return fmt.Errorf("failed on map UDF readiness check, %w", err)
+		}
+		defer func() {
+			err = mapBatchHandler.CloseConn(ctx)
+			if err != nil {
+				log.Warnw("Failed to close gRPC client conn", zap.Error(err))
+			}
+		}()
 	} else {
 		mapClient, err := mapper.New(mapper.WithMaxMessageSize(maxMessageSize))
 		if err != nil {

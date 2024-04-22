@@ -267,12 +267,16 @@ func (isdf *InterStepDataForward) forwardAChunk(ctx context.Context) {
 	var writeOffsets map[string][][]isb.Offset
 	if !isdf.opts.enableMapUdfStream {
 		// Default, event message individually vs batched together
-		if !isdf.opts.enabledBatchedMap {
-			isdf.opts.logger.Info("Sending Messages at Batched Map")
+		isdf.opts.logger.Infow("MDW: Check if batch enabled", "batchEnabled", isdf.opts.enabledBatchedMap)
+		if isdf.opts.enabledBatchedMap {
+			isdf.opts.logger.Info("MDW: Sending Messages at Batched Map")
 			// 1. Gather Messages into a single list
 			// send to map UDF only the data messages
-			var batched *readWriteMessagePairBatched
-			batched = new(readWriteMessagePairBatched)
+			// var batched *readWriteMessagePairBatched
+			// batched = new(readWriteMessagePairBatched)
+			var batched *readWriteMessagePairBatched = new(readWriteMessagePairBatched)
+
+			isdf.opts.logger.Infow("Creating new readMessage list", "length", len(dataMessages))
 			batched.readMessages = make([]*isb.ReadMessage, len(dataMessages))
 			// udfResults := make([]readWriteMessagePairBatched, len(dataMessages))
 
@@ -283,7 +287,6 @@ func (isdf *InterStepDataForward) forwardAChunk(ctx context.Context) {
 				m.Watermark = time.Time(processorWM)
 				// Track message
 				batched.readMessages[idx] = m
-				// udfResults[idx].readMessages = append(udfResults[idx].readMessages, m)
 			}
 
 			isdf.applyUDFBatch(ctx, batched)

@@ -163,6 +163,7 @@ const (
 
 	// UDF map streaming
 	MapUdfStreamKey = "numaflow.numaproj.io/map-stream"
+	MapUdfBatchKey  = "numaflow.numaproj.io/map-batch"
 )
 
 var (

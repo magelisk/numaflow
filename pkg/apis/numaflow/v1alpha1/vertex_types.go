@@ -417,6 +417,15 @@ func (v Vertex) MapUdfStreamEnabled() (bool, error) {
 	return false, nil
 }
 
+func (v Vertex) MapUdfBatchEnabled() (bool, error) {
+	if v.Spec.Metadata != nil && v.Spec.Metadata.Annotations != nil {
+		if mapUdfBatch, existing := v.Spec.Metadata.Annotations[MapUdfBatchKey]; existing {
+			return strconv.ParseBool(mapUdfBatch)
+		}
+	}
+	return false, nil
+}
+
 type VertexSpec struct {
 	AbstractVertex `json:",inline" protobuf:"bytes,1,opt,name=abstractVertex"`
 	PipelineName   string `json:"pipelineName" protobuf:"bytes,2,opt,name=pipelineName"`

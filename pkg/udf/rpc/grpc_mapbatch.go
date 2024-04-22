@@ -23,6 +23,7 @@ import (
 
 	mapbpb "github.com/numaproj/numaflow-go/pkg/apis/proto/mapbatch/v1"
 	"google.golang.org/protobuf/types/known/emptypb"
+	"google.golang.org/protobuf/types/known/timestamppb"
 	"k8s.io/apimachinery/pkg/util/wait"
 
 	"github.com/numaproj/numaflow/pkg/isb"
@@ -69,16 +70,27 @@ func (u *GRPCBasedMapBatch) WaitUntilReady(ctx context.Context) error {
 }
 
 func (u *GRPCBasedMapBatch) ApplyMapBatch(ctx context.Context, readMessage []*isb.ReadMessage) ([]*isb.WriteMessage, error) {
-	// keys := readMessage.Keys
-	// payload := readMessage.Body.Payload
+	log := logging.FromContext(ctx)
+	// TODO: Keeping this so we have a parent info for final response
 	parentMessageInfo := readMessage[0].MessageInfo
-	// var req = &mappb.MapRequest{
-	// 	Keys:      keys,
-	// 	Value:     payload,
-	// 	EventTime: timestamppb.New(parentMessageInfo.EventTime),
-	// 	Watermark: timestamppb.New(readMessage.Watermark),
-	// }
-	var req = &mapbpb.MapBatchRequest{}
+
+	var formatedRequests []*mapbpb.MapRequest = make([]*mapbpb.MapRequest, len(readMessage))
+	for i, msg := range readMessage {
+		log.Infof("Adding message # %d : %s", i, msg)
+		keys := msg.Keys
+		payload := msg.Body.Payload
+		parentMessageInfo := msg.MessageInfo
+		formatedRequests[i] = &mapbpb.MapRequest{
+			Keys:      keys,
+			Value:     payload,
+			EventTime: timestamppb.New(parentMessageInfo.EventTime),
+			Watermark: timestamppb.New(msg.Watermark),
+		}
+	}
+	var req = &mapbpb.MapBatchRequest{
+		Messages: formatedRequests,
+	}
+
 	response, err := u.client.MapBatchFn(ctx, req)
 	if err != nil {
 		udfErr, _ := sdkerr.FromError(err)
