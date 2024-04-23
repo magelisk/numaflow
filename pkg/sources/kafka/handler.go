@@ -77,7 +77,6 @@ func (consumer *consumerHandler) ConsumeClaim(session sarama.ConsumerGroupSessio
 	// https://github.com/IBM/sarama/blob/main/consumer_group.go#L27-L29
 	consumer.logger.Info("Kafka Consumer about to claim Messages from the Kafka broker", zap.Int32("partition", claim.Partition()), zap.Int64("offset", claim.InitialOffset()))
 	for {
-		consumer.logger.Info("Kafka Consumer about to claim Messages from the Kafka broker")
 		select {
 		case msg, ok := <-claim.Messages():
 			if !ok {

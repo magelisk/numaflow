@@ -38,7 +38,7 @@ func TestClient_IsReady(t *testing.T) {
 	assert.EqualError(t, err, "mock connection refused")
 }
 
-func TestClient_MapFn(t *testing.T) {
+func TestClient_MapBatchFn(t *testing.T) {
 	var ctx = context.Background()
 
 	ctrl := gomock.NewController(t)

@@ -78,7 +78,7 @@ func (c *client) IsReady(ctx context.Context, in *emptypb.Empty) (bool, error) {
 	return resp.GetReady(), nil
 }
 
-// MapFn applies a function to each datum element.
+// MapBatchFn take batch group of requests to process
 func (c *client) MapBatchFn(ctx context.Context, request *mapbpb.MapBatchRequest) (*mapbpb.MapBatchResponse, error) {
 	mapResponse, err := c.grpcClt.MapBatchFn(ctx, request)
 	err = util.ToUDFErr("c.grpcClt.MapFn", err)
