@@ -2,7 +2,7 @@
   "swagger": "2.0",
   "info": {
     "title": "Numaflow",
-    "version": "vwarner"
+    "version": "latest"
   },
   "paths": {},
   "definitions": {
@@ -18868,10 +18868,6 @@
         },
         "consumerGroup": {
           "type": "string"
-        },
-        "includeHeaders": {
-          "description": "include Kafka headers (this will change the payload struct into a JSON format with _body and _headers) EXPERIMENTAL: We might remove this option later on (https://github.com/numaproj/numaflow/issues/1568)",
-          "type": "boolean"
         },
         "sasl": {
           "description": "SASL user to configure SASL connection for kafka broker SASL.enable=true default for SASL.",
