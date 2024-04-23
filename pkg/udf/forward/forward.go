@@ -289,8 +289,48 @@ func (isdf *InterStepDataForward) forwardAChunk(ctx context.Context) {
 				batched.readMessages[idx] = m
 			}
 
-			isdf.applyUDFBatch(ctx, batched)
+			batchUDFProcessingStart := time.Now()
+			// var returnedMessages []*isb.WriteMessage:= isdf.applyUDFBatch(ctx, batched)
+			returnedMessages, err := isdf.applyUDFBatch(ctx, batched)
+			metrics.ConcurrentUDFProcessingTime.With(map[string]string{metrics.LabelVertex: isdf.vertexName, metrics.LabelPipeline: isdf.pipelineName, metrics.LabelVertexType: string(dfv1.VertexTypeMapUDF), metrics.LabelVertexReplicaIndex: strconv.Itoa(int(isdf.vertexReplica))}).Observe(float64(time.Since(batchUDFProcessingStart).Microseconds()))
 
+			var messageToStep = make(map[string][][]isb.Message)
+			isdf.opts.logger.Infof("MDW: isdf.toBuffers", "isdf.toBuffers", isdf.toBuffers)
+			for toVertex := range isdf.toBuffers {
+				// over allocating to have a predictable pattern
+				messageToStep[toVertex] = make([][]isb.Message, len(isdf.toBuffers[toVertex]))
+			}
+			isdf.opts.logger.Infof("MDW: messageToStep", "messageToStep", messageToStep)
+
+			// TODO: Magelisk: this is copy paste, lets make this less so
+			// let's figure out which vertex to send the results to.
+			// update the toBuffer(s) with writeMessages.
+			for _, message := range returnedMessages {
+				// look for errors in udf processing, if we see even 1 error NoAck all messages
+				// then return. Handling partial retrying is not worth ATM.
+				// if m.udfError != nil {
+				// 	metrics.UDFError.With(map[string]string{metrics.LabelVertex: isdf.vertexName, metrics.LabelPipeline: isdf.pipelineName, metrics.LabelVertexType: string(dfv1.VertexTypeMapUDF), metrics.LabelVertexReplicaIndex: strconv.Itoa(int(isdf.vertexReplica))}).Inc()
+				// 	isdf.opts.logger.Errorw("failed to applyUDF", zap.Error(m.udfError))
+				// 	// As there's no partial failure, non-ack all the readOffsets
+				// 	isdf.fromBufferPartition.NoAck(ctx, readOffsets)
+				// 	return
+				// }
+				// update toBuffers
+				if err := isdf.whereToStep2(message, messageToStep); err != nil {
+					isdf.opts.logger.Errorw("failed in whereToStep", zap.Error(err))
+					isdf.fromBufferPartition.NoAck(ctx, readOffsets)
+					return
+				}
+			}
+
+			// forward the message to the edge buffer (could be multiple edges)
+			writeOffsets, err = isdf.writeToBuffers(ctx, messageToStep)
+			if err != nil {
+				isdf.opts.logger.Errorw("failed to write to toBuffers", zap.Error(err))
+				isdf.fromBufferPartition.NoAck(ctx, readOffsets)
+				return
+			}
+			isdf.opts.logger.Debugw("writeToBuffers completed")
 		} else {
 			// create space for writeMessages specific to each step as we could forward to all the steps too.
 			var messageToStep = make(map[string][][]isb.Message)
@@ -758,6 +798,30 @@ func (isdf *InterStepDataForward) whereToStep(writeMessage *isb.WriteMessage, me
 	for _, t := range to {
 		if _, ok := messageToStep[t.ToVertexName]; !ok {
 			isdf.opts.logger.Errorw("failed in whereToStep", zap.Error(isb.MessageWriteErr{Name: isdf.fromBufferPartition.GetName(), Header: readMessage.Header, Body: readMessage.Body, Message: fmt.Sprintf("no such destination (%s)", t.ToVertexName)}))
+		}
+		messageToStep[t.ToVertexName][t.ToVertexPartitionIdx] = append(messageToStep[t.ToVertexName][t.ToVertexPartitionIdx], writeMessage.Message)
+	}
+	return nil
+}
+
+// whereToStep executes the WhereTo interfaces and then updates the to step's writeToBuffers buffer.
+func (isdf *InterStepDataForward) whereToStep2(writeMessage *isb.WriteMessage, messageToStep map[string][][]isb.Message) error {
+	// call WhereTo and drop it on errors
+	to, err := isdf.FSD.WhereTo(writeMessage.Keys, writeMessage.Tags)
+	if err != nil {
+		isdf.opts.logger.Errorw("failed in whereToStep", zap.Error(isb.MessageWriteErr{Name: isdf.fromBufferPartition.GetName(), Header: writeMessage.Header, Body: writeMessage.Body, Message: fmt.Sprintf("WhereTo failed, %s", err)}))
+		// a shutdown can break the blocking loop caused due to InternalErr
+		if ok, _ := isdf.IsShuttingDown(); ok {
+			err := fmt.Errorf("whereToStep, Stop called while stuck on an internal error, %v", err)
+			metrics.PlatformError.With(map[string]string{metrics.LabelVertex: isdf.vertexName, metrics.LabelPipeline: isdf.pipelineName, metrics.LabelVertexType: string(dfv1.VertexTypeMapUDF), metrics.LabelVertexReplicaIndex: strconv.Itoa(int(isdf.vertexReplica))}).Inc()
+			return err
+		}
+		return err
+	}
+
+	for _, t := range to {
+		if _, ok := messageToStep[t.ToVertexName]; !ok {
+			isdf.opts.logger.Errorw("failed in whereToStep", zap.Error(isb.MessageWriteErr{Name: isdf.fromBufferPartition.GetName(), Header: writeMessage.Header, Body: writeMessage.Body, Message: fmt.Sprintf("no such destination (%s)", t.ToVertexName)}))
 		}
 		messageToStep[t.ToVertexName][t.ToVertexPartitionIdx] = append(messageToStep[t.ToVertexName][t.ToVertexPartitionIdx], writeMessage.Message)
 	}

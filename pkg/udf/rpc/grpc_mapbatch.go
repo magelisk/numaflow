@@ -76,7 +76,7 @@ func (u *GRPCBasedMapBatch) ApplyMapBatch(ctx context.Context, readMessage []*is
 
 	var formatedRequests []*mapbpb.MapRequest = make([]*mapbpb.MapRequest, len(readMessage))
 	for i, msg := range readMessage {
-		log.Infof("Adding message # %d : %s", i, msg)
+		log.Infof("MDW: Adding message # %d : %s", i, msg)
 		keys := msg.Keys
 		payload := msg.Body.Payload
 		parentMessageInfo := msg.MessageInfo
@@ -92,6 +92,7 @@ func (u *GRPCBasedMapBatch) ApplyMapBatch(ctx context.Context, readMessage []*is
 	}
 
 	response, err := u.client.MapBatchFn(ctx, req)
+	log.Infow("MDW: Response came back", "response", response, "err", err)
 	if err != nil {
 		udfErr, _ := sdkerr.FromError(err)
 		switch udfErr.ErrorKind() {
@@ -150,8 +151,10 @@ func (u *GRPCBasedMapBatch) ApplyMapBatch(ctx context.Context, readMessage []*is
 		}
 	}
 
+	log.Infof("MDW: Total results length = %d", len(response.GetResults()))
 	writeMessages := make([]*isb.WriteMessage, 0)
 	for _, result := range response.GetResults() {
+		log.Infof("MDW: Processing result %s", result)
 		keys := result.Keys
 		taggedMessage := &isb.WriteMessage{
 			Message: isb.Message{

@@ -292,6 +292,8 @@ func (u *MapUDFProcessor) Start(ctx context.Context) error {
 	var metricsOpts []metrics.Option
 	if enableMapUdfStream {
 		metricsOpts = metrics.NewMetricsOptions(ctx, u.VertexInstance.Vertex, []metrics.HealthChecker{mapStreamHandler}, lagReaders)
+	} else if enableMapUdfBatch {
+		metricsOpts = metrics.NewMetricsOptions(ctx, u.VertexInstance.Vertex, []metrics.HealthChecker{mapBatchHandler}, lagReaders)
 	} else {
 		metricsOpts = metrics.NewMetricsOptions(ctx, u.VertexInstance.Vertex, []metrics.HealthChecker{mapHandler}, lagReaders)
 
