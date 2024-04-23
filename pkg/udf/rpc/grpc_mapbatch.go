@@ -121,7 +121,7 @@ func (u *GRPCBasedMapBatch) ApplyMapBatch(ctx context.Context, readMessage []*is
 				return true, nil
 			})
 			if !success {
-				return nil, ApplyUDFErr{
+				return nil, &ApplyUDFErr{
 					UserUDFErr: false,
 					Message:    fmt.Sprintf("gRPC client.MapFn failed, %s", err),
 					InternalErr: InternalErr{
@@ -131,7 +131,7 @@ func (u *GRPCBasedMapBatch) ApplyMapBatch(ctx context.Context, readMessage []*is
 				}
 			}
 		case sdkerr.NonRetryable:
-			return nil, ApplyUDFErr{
+			return nil, &ApplyUDFErr{
 				UserUDFErr: false,
 				Message:    fmt.Sprintf("gRPC client.MapFn failed, %s", err),
 				InternalErr: InternalErr{
@@ -140,7 +140,7 @@ func (u *GRPCBasedMapBatch) ApplyMapBatch(ctx context.Context, readMessage []*is
 				},
 			}
 		default:
-			return nil, ApplyUDFErr{
+			return nil, &ApplyUDFErr{
 				UserUDFErr: false,
 				Message:    fmt.Sprintf("gRPC client.MapFn failed, %s", err),
 				InternalErr: InternalErr{

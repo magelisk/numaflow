@@ -10,19 +10,19 @@ resources:
 
 images:
   - name: quay.io/numaproj/numaflow
-    newTag: v1.1.7
+    newTag: latest
 
-patchesStrategicMerge:
-  - |-
-    apiVersion: apps/v1
-    kind: Deployment
-    metadata:
-      name: numaflow-controller
-    spec:
-      template:
-        spec:
-          containers:
-            - name: controller-manager
-              env:
-                - name: NUMAFLOW_IMAGE
-                  value: quay.io/numaproj/numaflow:v1.1.7
+patches:
+  - patch: |-
+      apiVersion: apps/v1
+      kind: Deployment
+      metadata:
+        name: numaflow-controller
+      spec:
+        template:
+          spec:
+            containers:
+              - name: controller-manager
+                env:
+                  - name: NUMAFLOW_IMAGE
+                    value: quay.io/numaproj/numaflow:latest

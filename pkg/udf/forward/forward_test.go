@@ -1601,7 +1601,7 @@ func (f myForwardInternalErrTest) WhereTo(_ []string, _ []string, s string) ([]f
 }
 
 func (f myForwardInternalErrTest) ApplyMap(_ context.Context, _ *isb.ReadMessage) ([]*isb.WriteMessage, error) {
-	return nil, udfapplier.ApplyUDFErr{
+	return nil, &udfapplier.ApplyUDFErr{
 		UserUDFErr: false,
 		InternalErr: struct {
 			Flag        bool
@@ -1613,7 +1613,7 @@ func (f myForwardInternalErrTest) ApplyMap(_ context.Context, _ *isb.ReadMessage
 
 func (f myForwardInternalErrTest) ApplyMapStream(_ context.Context, _ *isb.ReadMessage, writeMessagesCh chan<- isb.WriteMessage) error {
 	close(writeMessagesCh)
-	return udfapplier.ApplyUDFErr{
+	return &udfapplier.ApplyUDFErr{
 		UserUDFErr: false,
 		InternalErr: struct {
 			Flag        bool
@@ -1671,7 +1671,7 @@ func validateMetrics(t *testing.T, batchSize int64) {
 
 	err := testutil.CollectAndCompare(metrics.ReadDataMessagesCount, strings.NewReader(metadata+expected), "forwarder_data_read_total")
 	if err != nil {
-		t.Errorf("unexpected collecting result:\n%s", err)
+		t.Errorf("unexpected collecting result: %v", err)
 	}
 
 	writeMetadata := `

@@ -306,7 +306,7 @@ spec:
         - controller
         env:
         - name: NUMAFLOW_IMAGE
-          value: quay.io/numaproj/numaflow:v1.1.7
+          value: quay.io/numaproj/numaflow:latest
         - name: NAMESPACE
           valueFrom:
             fieldRef:
@@ -326,10 +326,28 @@ spec:
         - name: NUMAFLOW_LEADER_ELECTION_DISABLED
           valueFrom:
             configMapKeyRef:
-              key: controller.disable.leader.election
+              key: controller.leader.election.disabled
               name: numaflow-cmd-params-config
               optional: true
-        image: quay.io/numaproj/numaflow:v1.1.7
+        - name: NUMAFLOW_LEADER_ELECTION_LEASE_DURATION
+          valueFrom:
+            configMapKeyRef:
+              key: controller.leader.election.lease.duration
+              name: numaflow-cmd-params-config
+              optional: true
+        - name: NUMAFLOW_LEADER_ELECTION_LEASE_RENEW_DEADLINE
+          valueFrom:
+            configMapKeyRef:
+              key: controller.leader.election.lease.renew.deadline
+              name: numaflow-cmd-params-config
+              optional: true
+        - name: NUMAFLOW_LEADER_ELECTION_LEASE_RENEW_PERIOD
+          valueFrom:
+            configMapKeyRef:
+              key: controller.leader.election.lease.renew.period
+              name: numaflow-cmd-params-config
+              optional: true
+        image: quay.io/numaproj/numaflow:latest
         imagePullPolicy: Always
         livenessProbe:
           httpGet:
