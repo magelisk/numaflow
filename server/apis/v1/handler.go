@@ -39,7 +39,7 @@ import (
 	"k8s.io/client-go/kubernetes"
 	"k8s.io/client-go/rest"
 	metricsversiond "k8s.io/metrics/pkg/client/clientset/versioned"
-	"k8s.io/utils/pointer"
+	"k8s.io/utils/ptr"
 
 	dfv1 "github.com/numaproj/numaflow/pkg/apis/numaflow/v1alpha1"
 	"github.com/numaproj/numaflow/pkg/apis/proto/daemon"
@@ -65,10 +65,12 @@ type handler struct {
 	daemonClientsCache   *lru.Cache[string, *daemonclient.DaemonClient]
 	dexObj               *DexObject
 	localUsersAuthObject *LocalUsersAuthObject
+	isReadOnly           bool
+	healthChecker        *HealthChecker
 }
 
 // NewHandler is used to provide a new instance of the handler type
-func NewHandler(dexObj *DexObject, localUsersAuthObject *LocalUsersAuthObject) (*handler, error) {
+func NewHandler(ctx context.Context, dexObj *DexObject, localUsersAuthObject *LocalUsersAuthObject, isReadOnly bool) (*handler, error) {
 	var (
 		k8sRestConfig *rest.Config
 		err           error
@@ -93,6 +95,8 @@ func NewHandler(dexObj *DexObject, localUsersAuthObject *LocalUsersAuthObject) (
 		daemonClientsCache:   daemonClientsCache,
 		dexObj:               dexObj,
 		localUsersAuthObject: localUsersAuthObject,
+		isReadOnly:           isReadOnly,
+		healthChecker:        NewHealthChecker(ctx),
 	}, nil
 }
 
@@ -222,7 +226,7 @@ func (h *handler) GetClusterSummary(c *gin.Context) {
 			h.respondWithError(c, fmt.Sprintf("Failed to fetch cluster summary, %s", err.Error()))
 			return
 		}
-		if status == PipelineStatusInactive {
+		if status == dfv1.PipelineStatusInactive {
 			summary.pipelineSummary.Inactive++
 		} else {
 			summary.pipelineSummary.Active.increment(status)
@@ -280,6 +284,12 @@ func (h *handler) GetClusterSummary(c *gin.Context) {
 
 // CreatePipeline is used to create a given pipeline
 func (h *handler) CreatePipeline(c *gin.Context) {
+	if h.isReadOnly {
+		errMsg := "Failed to perform this operation in read only mode"
+		c.JSON(http.StatusForbidden, NewNumaflowAPIResponse(&errMsg, nil))
+		return
+	}
+
 	ns := c.Param("namespace")
 	// dryRun is used to check if the operation is just a validation or an actual creation
 	dryRun := strings.EqualFold("true", c.DefaultQuery("dry-run", "false"))
@@ -408,6 +418,12 @@ func (h *handler) GetPipeline(c *gin.Context) {
 
 // UpdatePipeline is used to update a given pipeline
 func (h *handler) UpdatePipeline(c *gin.Context) {
+	if h.isReadOnly {
+		errMsg := "Failed to perform this operation in read only mode"
+		c.JSON(http.StatusForbidden, NewNumaflowAPIResponse(&errMsg, nil))
+		return
+	}
+
 	ns, pipeline := c.Param("namespace"), c.Param("pipeline")
 	// dryRun is used to check if the operation is just a validation or an actual update
 	dryRun := strings.EqualFold("true", c.DefaultQuery("dry-run", "false"))
@@ -458,6 +474,12 @@ func (h *handler) UpdatePipeline(c *gin.Context) {
 
 // DeletePipeline is used to delete a given pipeline
 func (h *handler) DeletePipeline(c *gin.Context) {
+	if h.isReadOnly {
+		errMsg := "Failed to perform this operation in read only mode"
+		c.JSON(http.StatusForbidden, NewNumaflowAPIResponse(&errMsg, nil))
+		return
+	}
+
 	ns, pipeline := c.Param("namespace"), c.Param("pipeline")
 
 	if err := h.numaflowClient.Pipelines(ns).Delete(context.Background(), pipeline, metav1.DeleteOptions{}); err != nil {
@@ -473,6 +495,12 @@ func (h *handler) DeletePipeline(c *gin.Context) {
 
 // PatchPipeline is used to patch the pipeline spec to achieve operations such as "pause" and "resume"
 func (h *handler) PatchPipeline(c *gin.Context) {
+	if h.isReadOnly {
+		errMsg := "Failed to perform this operation in read only mode"
+		c.JSON(http.StatusForbidden, NewNumaflowAPIResponse(&errMsg, nil))
+		return
+	}
+
 	ns, pipeline := c.Param("namespace"), c.Param("pipeline")
 
 	patchSpec, err := io.ReadAll(c.Request.Body)
@@ -496,6 +524,12 @@ func (h *handler) PatchPipeline(c *gin.Context) {
 }
 
 func (h *handler) CreateInterStepBufferService(c *gin.Context) {
+	if h.isReadOnly {
+		errMsg := "Failed to perform this operation in read only mode"
+		c.JSON(http.StatusForbidden, NewNumaflowAPIResponse(&errMsg, nil))
+		return
+	}
+
 	ns := c.Param("namespace")
 	// dryRun is used to check if the operation is just a validation or an actual update
 	dryRun := strings.EqualFold("true", c.DefaultQuery("dry-run", "false"))
@@ -565,6 +599,12 @@ func (h *handler) GetInterStepBufferService(c *gin.Context) {
 }
 
 func (h *handler) UpdateInterStepBufferService(c *gin.Context) {
+	if h.isReadOnly {
+		errMsg := "Failed to perform this operation in read only mode"
+		c.JSON(http.StatusForbidden, NewNumaflowAPIResponse(&errMsg, nil))
+		return
+	}
+
 	ns, isbsvcName := c.Param("namespace"), c.Param("isb-service")
 	// dryRun is used to check if the operation is just a validation or an actual update
 	dryRun := strings.EqualFold("true", c.DefaultQuery("dry-run", "false"))
@@ -601,6 +641,12 @@ func (h *handler) UpdateInterStepBufferService(c *gin.Context) {
 }
 
 func (h *handler) DeleteInterStepBufferService(c *gin.Context) {
+	if h.isReadOnly {
+		errMsg := "Failed to perform this operation in read only mode"
+		c.JSON(http.StatusForbidden, NewNumaflowAPIResponse(&errMsg, nil))
+		return
+	}
+
 	ns, isbsvcName := c.Param("namespace"), c.Param("isb-service")
 
 	pipelines, err := h.numaflowClient.Pipelines(ns).List(context.Background(), metav1.ListOptions{})
@@ -670,6 +716,12 @@ func (h *handler) respondWithError(c *gin.Context, message string) {
 
 // UpdateVertex is used to update the vertex spec
 func (h *handler) UpdateVertex(c *gin.Context) {
+	if h.isReadOnly {
+		errMsg := "Failed to perform this operation in read only mode"
+		c.JSON(http.StatusForbidden, NewNumaflowAPIResponse(&errMsg, nil))
+		return
+	}
+
 	var (
 		requestBody     dfv1.AbstractVertex
 		inputVertexName = c.Param("vertex")
@@ -820,7 +872,7 @@ func (h *handler) parseTailLines(query string) *int64 {
 	}
 
 	x, _ := strconv.ParseInt(query, 10, 64)
-	return pointer.Int64(x)
+	return ptr.To[int64](x)
 }
 
 func (h *handler) streamLogs(c *gin.Context, stream io.ReadCloser) {
@@ -876,17 +928,47 @@ func (h *handler) GetNamespaceEvents(c *gin.Context) {
 	c.JSON(http.StatusOK, NewNumaflowAPIResponse(nil, response))
 }
 
-// GetPipelineStatus returns the pipeline status. It is based on Health and Criticality.
-// Health can be "healthy (0) | unhealthy (1) | paused (3) | unknown (4)".
-// Health here indicates pipeline's ability to process messages.
-// A backlogged pipeline can be healthy even though it has an increasing back-pressure. Health purely means it is up and running.
-// Pipelines health will be the max(health) based of each vertex's health
-// Criticality on the other end shows whether the pipeline is working as expected.
+// GetPipelineStatus returns the pipeline status. It is based on Resource Health and Data Criticality.
+// Resource Health can be "healthy (0) | unhealthy (1) | paused (3) | unknown (4)".
+// A backlogged pipeline can be healthy even though it has an increasing back-pressure.
+// Resource Health purely means it is up and running.
+// Resource health will be the max(health) based of each vertex's health
+// Data Criticality on the other end shows whether the pipeline is working as expected.
 // It represents the pending messages, lags, etc.
-// Criticality can be "ok (0) | warning (1) | critical (2)".
-// Health and Criticality are different because ...?
+// Data Criticality can be "ok (0) | warning (1) | critical (2)".
+// GetPipelineStatus is used to return the status of a given pipeline
+// It is divided into two parts:
+// 1. Pipeline Resource Health: It is based on the health of each vertex in the pipeline
+// 2. Data Criticality: It is based on the data movement of the pipeline
 func (h *handler) GetPipelineStatus(c *gin.Context) {
-	c.JSON(http.StatusNotImplemented, "working on it")
+	ns, pipeline := c.Param("namespace"), c.Param("pipeline")
+
+	// Get the vertex level health of the pipeline
+	resourceHealth, err := h.healthChecker.getPipelineResourceHealth(h, ns, pipeline)
+	if err != nil {
+		h.respondWithError(c, fmt.Sprintf("Failed to get the dataStatus for pipeline %q: %s", pipeline, err.Error()))
+		return
+	}
+
+	// Get a new daemon client for the given pipeline
+	client, err := h.getDaemonClient(ns, pipeline)
+	if err != nil || client == nil {
+		h.respondWithError(c, fmt.Sprintf("failed to get daemon service client for pipeline %q, %s", pipeline, err.Error()))
+		return
+	}
+	// Get the data criticality for the given pipeline
+	dataStatus, err := client.GetPipelineStatus(context.Background(), pipeline)
+	if err != nil {
+		h.respondWithError(c, fmt.Sprintf("Failed to get the dataStatus for pipeline %q: %s", pipeline, err.Error()))
+		return
+	}
+
+	// Create a response string based on the vertex health and data criticality
+	// We combine both the states to get the final dataStatus of the pipeline
+	response := NewHealthResponse(resourceHealth.Status, dataStatus.GetStatus(),
+		resourceHealth.Message, dataStatus.GetMessage(), resourceHealth.Code, dataStatus.GetCode())
+
+	c.JSON(http.StatusOK, NewNumaflowAPIResponse(nil, response))
 }
 
 // getAllNamespaces is a utility used to fetch all the namespaces in the cluster
@@ -949,14 +1031,14 @@ func getIsbServices(h *handler, namespace string) (ISBServices, error) {
 // TODO(API): Change the Daemon service to return the consolidated status of the pipeline
 // to save on multiple calls to the daemon service
 func getPipelineStatus(pipeline *dfv1.Pipeline) (string, error) {
-	retStatus := PipelineStatusHealthy
+	retStatus := dfv1.PipelineStatusHealthy
 	// Check if the pipeline is paused, if so, return inactive status
 	if pipeline.Spec.Lifecycle.GetDesiredPhase() == dfv1.PipelinePhasePaused {
-		retStatus = PipelineStatusInactive
+		retStatus = dfv1.PipelineStatusInactive
 	} else if pipeline.Spec.Lifecycle.GetDesiredPhase() == dfv1.PipelinePhaseRunning {
-		retStatus = PipelineStatusHealthy
+		retStatus = dfv1.PipelineStatusHealthy
 	} else if pipeline.Spec.Lifecycle.GetDesiredPhase() == dfv1.PipelinePhaseFailed {
-		retStatus = PipelineStatusCritical
+		retStatus = dfv1.PipelineStatusCritical
 	}
 	return retStatus, nil
 }

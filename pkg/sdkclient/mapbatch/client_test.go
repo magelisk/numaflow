@@ -52,7 +52,7 @@ func TestClient_MapFn(t *testing.T) {
 			Tags:  nil,
 		},
 	}}, nil)
-	mockClient.EXPECT().MapFn(gomock.Any(), gomock.Any()).Return(&mapbpb.MapBatchResponse{Results: []*mapbpb.MapBatchResponse_Result{
+	mockClient.EXPECT().MapBatchFn(gomock.Any(), gomock.Any()).Return(&mapbpb.MapBatchResponse{Results: []*mapbpb.MapBatchResponse_Result{
 		{
 			Keys:  []string{"temp-key"},
 			Value: []byte("mock result"),

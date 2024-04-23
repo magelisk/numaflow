@@ -35,7 +35,7 @@ import (
 type myForwardToAllTest struct {
 }
 
-func (f myForwardToAllTest) WhereTo(_ []string, _ []string) ([]forwarder.VertexBuffer, error) {
+func (f myForwardToAllTest) WhereTo(_ []string, _ []string, s string) ([]forwarder.VertexBuffer, error) {
 	return []forwarder.VertexBuffer{{
 		ToVertexName:         "test",
 		ToVertexPartitionIdx: 0,
@@ -85,7 +85,9 @@ func Test_NewHTTP(t *testing.T) {
 	toVertexWmStores := map[string]store.WatermarkStore{
 		"test": publishWMStores,
 	}
-	h, err := New(vi, toBuffers, myForwardToAllTest{}, applier.Terminal, fetchWatermark, toVertexWmStores, publishWMStores, wmb.NewIdleManager(len(toBuffers)))
+
+	idleManager, _ := wmb.NewIdleManager(1, len(toBuffers))
+	h, err := New(vi, toBuffers, myForwardToAllTest{}, applier.Terminal, fetchWatermark, toVertexWmStores, publishWMStores, idleManager)
 	assert.NoError(t, err)
 	assert.False(t, h.(*httpSource).ready)
 	assert.Equal(t, v.Spec.Name, h.GetName())

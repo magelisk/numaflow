@@ -316,7 +316,12 @@ message Edge {
 
 // FixedWindow describes a fixed window
 message FixedWindow {
+  // Length is the duration of the fixed window.
   optional k8s.io.apimachinery.pkg.apis.meta.v1.Duration length = 1;
+
+  // +optional
+  // Streaming should be set to true if the reduce udf is streaming.
+  optional bool streaming = 2;
 }
 
 message ForwardConditions {
@@ -375,10 +380,19 @@ message GeneratorSource {
   optional int32 msgSize = 3;
 
   // KeyCount is the number of unique keys in the payload
+  // +optional
   optional int32 keyCount = 4;
 
   // Value is an optional uint64 value to be written in to the payload
+  // +optional
   optional uint64 value = 5;
+
+  // Jitter is the jitter for the message generation, used to simulate out of order messages
+  // for example if the jitter is 10s, then the message's event time will be delayed by a random
+  // time between 0 and 10s which will result in the message being out of order by 0 to 10s
+  // +kubebuilder:default="0s"
+  // +optional
+  optional k8s.io.apimachinery.pkg.apis.meta.v1.Duration jitter = 6;
 }
 
 message GetDaemonDeploymentReq {
@@ -828,6 +842,11 @@ message NatsSource {
   optional NatsAuth auth = 5;
 }
 
+// NoStore means there will be no persistence storage and there will be data loss during pod restarts.
+// Use this option only if you do not care about correctness (e.g., approx statistics pipeline like sampling rate, etc.).
+message NoStore {
+}
+
 // PBQStorage defines the persistence configuration for a vertex.
 message PBQStorage {
   // +optional
@@ -835,6 +854,9 @@ message PBQStorage {
 
   // +optional
   optional k8s.io.api.core.v1.EmptyDirVolumeSource emptyDir = 2;
+
+  // +optional
+  optional NoStore no_store = 3;
 }
 
 // PersistenceStrategy defines the strategy of persistence
@@ -1102,6 +1124,12 @@ message Scale {
   optional uint32 scaleDownCooldownSeconds = 11;
 }
 
+// SessionWindow describes a session window
+message SessionWindow {
+  // Timeout is the duration of inactivity after which a session window closes.
+  optional k8s.io.apimachinery.pkg.apis.meta.v1.Duration timeout = 1;
+}
+
 // SideInput defines information of a Side Input
 message SideInput {
   optional string name = 1;
@@ -1151,9 +1179,15 @@ message Sink {
 
 // SlidingWindow describes a sliding window
 message SlidingWindow {
+  // Length is the duration of the sliding window.
   optional k8s.io.apimachinery.pkg.apis.meta.v1.Duration length = 1;
 
+  // Slide is the slide parameter that controls the frequency at which the sliding window is created.
   optional k8s.io.apimachinery.pkg.apis.meta.v1.Duration slide = 2;
+
+  // +optional
+  // Streaming should be set to true if the reduce udf is streaming.
+  optional bool streaming = 3;
 }
 
 message Source {
@@ -1403,5 +1437,8 @@ message Window {
 
   // +optional
   optional SlidingWindow sliding = 2;
+
+  // +optional
+  optional SessionWindow session = 3;
 }
 

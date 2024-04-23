@@ -17,6 +17,7 @@ limitations under the License.
 package cmd
 
 import (
+	"context"
 	"crypto/tls"
 	"fmt"
 	"net/http"
@@ -47,6 +48,7 @@ type ServerOptions struct {
 	Namespaced       bool
 	ManagedNamespace string
 	BaseHref         string
+	ReadOnly         bool
 	DisableAuth      bool
 	DexServerAddr    string
 	ServerAddr       string
@@ -62,8 +64,8 @@ func NewServer(opts ServerOptions) *server {
 	}
 }
 
-func (s *server) Start() {
-	logger := logging.NewLogger().Named("server")
+func (s *server) Start(ctx context.Context) {
+	log := logging.FromContext(ctx)
 	router := gin.New()
 	router.Use(gin.LoggerWithConfig(gin.LoggerConfig{SkipPaths: []string{"/livez"}}))
 	router.RedirectTrailingSlash = true
@@ -77,10 +79,12 @@ func (s *server) Start() {
 	}
 	router.Any("/dex/*name", v1.NewDexReverseProxy(s.options.DexServerAddr))
 	routes.Routes(
+		ctx,
 		router,
 		routes.SystemInfo{
 			ManagedNamespace: s.options.ManagedNamespace,
 			Namespaced:       s.options.Namespaced,
+			IsReadOnly:       s.options.ReadOnly,
 			Version:          numaflow.GetVersion().String()},
 		routes.AuthInfo{
 			DisableAuth:   s.options.DisableAuth,
@@ -97,7 +101,7 @@ func (s *server) Start() {
 	}
 
 	if s.options.Insecure {
-		logger.Infow(
+		log.Infow(
 			"Starting server (TLS disabled) on "+server.Addr,
 			"version", numaflow.GetVersion(),
 			"disable-auth", s.options.DisableAuth,
@@ -112,7 +116,7 @@ func (s *server) Start() {
 			panic(err)
 		}
 		server.TLSConfig = &tls.Config{Certificates: []tls.Certificate{*cert}, MinVersion: tls.VersionTLS12}
-		logger.Infow(
+		log.Infow(
 			"Starting server on "+server.Addr,
 			"version", numaflow.GetVersion(),
 			"disable-auth", s.options.DisableAuth,

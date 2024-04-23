@@ -19,27 +19,36 @@ package udsource
 import (
 	"context"
 	"fmt"
+	"strconv"
 	"sync"
 	"time"
 
 	sourcepb "github.com/numaproj/numaflow-go/pkg/apis/proto/source/v1"
 	"google.golang.org/protobuf/types/known/emptypb"
 
+	dfv1 "github.com/numaproj/numaflow/pkg/apis/numaflow/v1alpha1"
 	"github.com/numaproj/numaflow/pkg/isb"
-	sourceclient "github.com/numaproj/numaflow/pkg/sdkclient/source/client"
+	sourceclient "github.com/numaproj/numaflow/pkg/sdkclient/source"
 	"github.com/numaproj/numaflow/pkg/shared/logging"
-	"github.com/numaproj/numaflow/pkg/sources/udsource/utils"
 )
 
 // GRPCBasedUDSource applies a user-defined source over gRPC
 // connection where server is the UDSource.
 type GRPCBasedUDSource struct {
-	client sourceclient.Client
+	vertexName         string
+	pipelineName       string
+	vertexReplicaIndex int32
+	client             sourceclient.Client
 }
 
-// NewUDSgRPCBasedUDSource accepts a gRPC client and returns a new GRPCBasedUDSource.
-func NewUDSgRPCBasedUDSource(c sourceclient.Client) (*GRPCBasedUDSource, error) {
-	return &GRPCBasedUDSource{c}, nil
+// NewUDSgRPCBasedUDSource accepts a vertex instance, gRPC client and returns a new GRPCBasedUDSource.
+func NewUDSgRPCBasedUDSource(vertexInstance *dfv1.VertexInstance, c sourceclient.Client) (*GRPCBasedUDSource, error) {
+	return &GRPCBasedUDSource{
+		vertexName:         vertexInstance.Vertex.Name,
+		pipelineName:       vertexInstance.Vertex.Spec.PipelineName,
+		vertexReplicaIndex: vertexInstance.Replica,
+		client:             c,
+	}, nil
 }
 
 // CloseConn closes the gRPC client connection.
@@ -76,6 +85,11 @@ func (u *GRPCBasedUDSource) ApplyPendingFn(ctx context.Context) (int64, error) {
 		if resp.Result.Count < 0 {
 			return isb.PendingNotAvailable, nil
 		}
+		udsourcePending.WithLabelValues(
+			u.vertexName,
+			u.pipelineName,
+			strconv.Itoa(int(u.vertexReplicaIndex)),
+		).Set(float64(resp.Result.Count))
 		return resp.Result.Count, nil
 	} else {
 		return isb.PendingNotAvailable, err
@@ -128,19 +142,28 @@ func (u *GRPCBasedUDSource) ApplyReadFn(ctx context.Context, count int64, timeou
 			}
 			// Convert the datum to ReadMessage and append to the list
 			r := datum.GetResult()
+
+			offset := NewUserDefinedSourceOffset(r.GetOffset())
 			readMessage := &isb.ReadMessage{
 				Message: isb.Message{
 					Header: isb.Header{
 						MessageInfo: isb.MessageInfo{EventTime: r.GetEventTime().AsTime()},
-						ID:          constructMessageID(r),
+						ID:          constructMessageID(offset.String(), r.GetOffset().GetPartitionId()),
 						Keys:        r.GetKeys(),
+						Headers:     r.GetHeaders(),
 					},
 					Body: isb.Body{
 						Payload: r.GetPayload(),
 					},
 				},
-				ReadOffset: utils.ConvertToIsbOffset(r.GetOffset()),
+				ReadOffset: offset,
 			}
+			udsourceReadCount.WithLabelValues(
+				u.vertexName,
+				u.pipelineName,
+				strconv.Itoa(int(u.vertexReplicaIndex)),
+				strconv.Itoa(int(offset.PartitionIdx())),
+			).Inc()
 			readMessages = append(readMessages, readMessage)
 		}
 	}
@@ -150,7 +173,7 @@ func (u *GRPCBasedUDSource) ApplyReadFn(ctx context.Context, count int64, timeou
 func (u *GRPCBasedUDSource) ApplyAckFn(ctx context.Context, offsets []isb.Offset) error {
 	rOffsets := make([]*sourcepb.Offset, len(offsets))
 	for i, offset := range offsets {
-		rOffsets[i] = utils.ConvertToSourceOffset(offset)
+		rOffsets[i] = ConvertToUserDefinedSourceOffset(offset)
 	}
 	var r = &sourcepb.AckRequest{
 		Request: &sourcepb.AckRequest_Request{
@@ -171,7 +194,7 @@ func (u *GRPCBasedUDSource) ApplyPartitionFn(ctx context.Context) ([]int32, erro
 	return resp.GetResult().GetPartitions(), nil
 }
 
-func constructMessageID(r *sourcepb.ReadResponse_Result) string {
+func constructMessageID(offset string, partitionIdx int32) string {
 	// For a user-defined source, the partition ID plus the offset should be able to uniquely identify a message
-	return fmt.Sprintf("%d-%s", r.GetOffset().GetPartitionId(), string(r.GetOffset().GetOffset()))
+	return fmt.Sprintf("%d-%s", partitionIdx, offset)
 }

@@ -18,10 +18,9 @@ package sourcetransformer
 
 import (
 	"context"
-	"log"
-	"time"
 
 	transformpb "github.com/numaproj/numaflow-go/pkg/apis/proto/sourcetransform/v1"
+	"github.com/numaproj/numaflow-go/pkg/info"
 	"google.golang.org/grpc"
 	"google.golang.org/protobuf/types/known/emptypb"
 
@@ -36,31 +35,15 @@ type client struct {
 }
 
 // New creates a new client object.
-func New(inputOptions ...Option) (Client, error) {
-	var opts = &options{
-		maxMessageSize:             sdkclient.DefaultGRPCMaxMessageSize, // 64 MB
-		serverInfoFilePath:         sdkclient.ServerInfoFilePath,
-		tcpSockAddr:                sdkclient.TcpAddr,
-		udsSockAddr:                sdkclient.SourceTransformerAddr,
-		serverInfoReadinessTimeout: 120 * time.Second, // Default timeout is 120 seconds
-	}
+func New(serverInfo *info.ServerInfo, inputOptions ...sdkclient.Option) (Client, error) {
+	var opts = sdkclient.DefaultOptions(sdkclient.SourceTransformerAddr)
 
 	for _, inputOption := range inputOptions {
 		inputOption(opts)
 	}
 
-	// Wait for server info to be ready
-	serverInfo, err := util.WaitForServerInfo(opts.serverInfoReadinessTimeout, opts.serverInfoFilePath)
-	if err != nil {
-		return nil, err
-	}
-
-	if serverInfo != nil {
-		log.Printf("ServerInfo: %v\n", serverInfo)
-	}
-
 	// Connect to the server
-	conn, err := util.ConnectToServer(opts.udsSockAddr, opts.tcpSockAddr, serverInfo, opts.maxMessageSize)
+	conn, err := util.ConnectToServer(opts.UdsSockAddr(), serverInfo, opts.MaxMessageSize())
 	if err != nil {
 		return nil, err
 	}

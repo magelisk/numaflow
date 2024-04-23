@@ -18,19 +18,17 @@ package pbq
 
 import (
 	"context"
-	"errors"
+	"fmt"
 	"strconv"
 	"sync"
 
 	"go.uber.org/zap"
 
-	"github.com/numaproj/numaflow/pkg/isb"
 	"github.com/numaproj/numaflow/pkg/metrics"
 	"github.com/numaproj/numaflow/pkg/reduce/pbq/partition"
-	"github.com/numaproj/numaflow/pkg/reduce/pbq/store"
+	"github.com/numaproj/numaflow/pkg/reduce/pbq/wal"
+	"github.com/numaproj/numaflow/pkg/window"
 )
-
-var ErrCOB = errors.New("error while writing to pbq, pbq is closed")
 
 // PBQ Buffer queue which is backed with a persisted store, each partition
 // will have a PBQ associated with it
@@ -38,43 +36,63 @@ type PBQ struct {
 	vertexName    string
 	pipelineName  string
 	vertexReplica int32
-	store         store.Store
-	output        chan *isb.ReadMessage
+	store         wal.WAL
+	output        chan *window.TimedWindowRequest
 	cob           bool // cob to avoid panic in case writes happen after close of book
 	PartitionID   partition.ID
 	options       *options
 	manager       *Manager
+	windowType    window.Type
 	log           *zap.SugaredLogger
 	mu            sync.Mutex
 }
 
 var _ ReadWriteCloser = (*PBQ)(nil)
 
-// Write writes message to pbq and persistent store
-func (p *PBQ) Write(ctx context.Context, message *isb.ReadMessage) error {
+// Write accepts a window request and writes it to the PBQ, only the isb message is written to the store.
+// The other metadata like operation etc are recomputed from WAL.
+// request can never be nil.
+func (p *PBQ) Write(ctx context.Context, request *window.TimedWindowRequest, persist bool) error {
+	var writeErr error
+
 	// if cob we should return
 	if p.cob {
-		p.log.Errorw("Failed to write message to pbq, pbq is closed", zap.Any("ID", p.PartitionID), zap.Any("header", message.Header), zap.Any("message", message))
+		p.log.Errorw("Failed to write request to pbq, pbq is closed", zap.Any("ID", p.PartitionID), zap.Any("request", request))
+		return fmt.Errorf("pbq is closed")
+	}
+
+	// if the window operation is delete, we should close the output channel and return
+	if request.Operation == window.Delete {
+		p.CloseOfBook()
 		return nil
 	}
-	var writeErr error
-	// we need context to get out of blocking write
+
+	// write the request to the output channel
 	select {
-	case p.output <- message:
-		// this store.Write is an `inSync` flush (if need be). The performance will be very bad but the system is correct.
-		// TODO: shortly in the near future we will move to async writes.
-		writeErr = p.store.Write(message)
+	case p.output <- request:
+
 	case <-ctx.Done():
-		// closing the output channel will not cause panic, since its inside select case
-		// ctx.Done implicitly means write hasn't succeeded.
-		close(p.output)
-		writeErr = ctx.Err()
+		return ctx.Err()
 	}
+
+	switch request.Operation {
+	case window.Open, window.Append, window.Expand:
+		// during replay we do not have to persist
+		if persist {
+			writeErr = p.store.Write(request.ReadMessage)
+		}
+	case window.Close, window.Merge:
+	// these do not have request.ReadMessage, only metadata fields are used
+	default:
+		return fmt.Errorf("unknown request.Operation, %v", request.Operation)
+	}
+
 	pbqChannelSize.With(map[string]string{
 		metrics.LabelVertex:             p.vertexName,
 		metrics.LabelPipeline:           p.pipelineName,
 		metrics.LabelVertexReplicaIndex: strconv.Itoa(int(p.vertexReplica)),
 	}).Set(float64(len(p.output)))
+
 	return writeErr
 }
 
@@ -96,9 +114,9 @@ func (p *PBQ) Close() error {
 	return nil
 }
 
-// ReadCh exposes read channel to read messages from PBQ
+// ReadCh exposes read channel to read the window requests from the PBQ
 // close on read channel indicates COB
-func (p *PBQ) ReadCh() <-chan *isb.ReadMessage {
+func (p *PBQ) ReadCh() <-chan *window.TimedWindowRequest {
 	return p.output
 }
 
@@ -111,29 +129,4 @@ func (p *PBQ) GC() error {
 	defer p.mu.Unlock()
 	p.store = nil
 	return p.manager.deregister(p.PartitionID)
-}
-
-// replayRecordsFromStore replays store messages when replay flag is set during start up time. It replays by reading from
-// the store and writing to the PBQ channel.
-func (p *PBQ) replayRecordsFromStore(ctx context.Context) {
-	size := p.options.readBatchSize
-readLoop:
-	for {
-		readMessages, eof, err := p.store.Read(size)
-		if err != nil {
-			p.log.Errorw("Error while replaying records from store", zap.Any("ID", p.PartitionID), zap.Error(err))
-		}
-		for _, msg := range readMessages {
-			// select to avoid infinite blocking while writing to output channel
-			select {
-			case p.output <- msg:
-			case <-ctx.Done():
-				break readLoop
-			}
-		}
-		// after replaying all the messages from store, unset replay flag
-		if eof {
-			break
-		}
-	}
 }

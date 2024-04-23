@@ -132,17 +132,34 @@ type Window struct {
 	Fixed *FixedWindow `json:"fixed" protobuf:"bytes,1,opt,name=fixed"`
 	// +optional
 	Sliding *SlidingWindow `json:"sliding" protobuf:"bytes,2,opt,name=sliding"`
+	// +optional
+	Session *SessionWindow `json:"session" protobuf:"bytes,3,opt,name=session"`
 }
 
 // FixedWindow describes a fixed window
 type FixedWindow struct {
+	// Length is the duration of the fixed window.
 	Length *metav1.Duration `json:"length,omitempty" protobuf:"bytes,1,opt,name=length"`
+	// +optional
+	// Streaming should be set to true if the reduce udf is streaming.
+	Streaming bool `json:"streaming,omitempty" protobuf:"bytes,2,opt,name=streaming"`
 }
 
 // SlidingWindow describes a sliding window
 type SlidingWindow struct {
+	// Length is the duration of the sliding window.
 	Length *metav1.Duration `json:"length,omitempty" protobuf:"bytes,1,opt,name=length"`
-	Slide  *metav1.Duration `json:"slide,omitempty" protobuf:"bytes,2,opt,name=slide"`
+	// Slide is the slide parameter that controls the frequency at which the sliding window is created.
+	Slide *metav1.Duration `json:"slide,omitempty" protobuf:"bytes,2,opt,name=slide"`
+	// +optional
+	// Streaming should be set to true if the reduce udf is streaming.
+	Streaming bool `json:"streaming,omitempty" protobuf:"bytes,3,opt,name=streaming"`
+}
+
+// SessionWindow describes a session window
+type SessionWindow struct {
+	// Timeout is the duration of inactivity after which a session window closes.
+	Timeout *metav1.Duration `json:"timeout,omitempty" protobuf:"bytes,1,opt,name=timeout"`
 }
 
 // PBQStorage defines the persistence configuration for a vertex.
@@ -151,7 +168,13 @@ type PBQStorage struct {
 	PersistentVolumeClaim *PersistenceStrategy `json:"persistentVolumeClaim,omitempty" protobuf:"bytes,1,opt,name=persistentVolumeClaim"`
 	// +optional
 	EmptyDir *corev1.EmptyDirVolumeSource `json:"emptyDir,omitempty" protobuf:"bytes,2,opt,name=emptyDir"`
+	// +optional
+	NoStore *NoStore `json:"no_store,omitempty" protobuf:"bytes,3,opt,name=no_store"`
 }
+
+// NoStore means there will be no persistence storage and there will be data loss during pod restarts.
+// Use this option only if you do not care about correctness (e.g., approx statistics pipeline like sampling rate, etc.).
+type NoStore struct{}
 
 // GeneratePBQStoragePVCName generates pvc name used by reduce vertex.
 func GeneratePBQStoragePVCName(pipelineName, vertex string, index int) string {

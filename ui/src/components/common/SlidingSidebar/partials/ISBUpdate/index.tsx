@@ -1,4 +1,4 @@
-import React, { useCallback, useEffect, useState } from "react";
+import React, { useCallback, useContext, useEffect, useState } from "react";
 import YAML from "yaml";
 import Box from "@mui/material/Box";
 import {
@@ -8,6 +8,8 @@ import {
   ValidationMessage,
 } from "../../../SpecEditor";
 import { SpecEditorSidebarProps } from "../..";
+import { AppContextProps } from "../../../../../types/declarations/app";
+import { AppContext } from "../../../../../App";
 import { getAPIResponseError, getBaseHref } from "../../../../../utils";
 
 import "./style.css";
@@ -17,6 +19,7 @@ export function ISBUpdate({
   namespaceId,
   isbId,
   viewType,
+  titleOverride,
   onUpdateComplete,
   setModalOnClose,
 }: SpecEditorSidebarProps) {
@@ -27,6 +30,7 @@ export function ISBUpdate({
     ValidationMessage | undefined
   >();
   const [status, setStatus] = useState<StatusIndicator | undefined>();
+  const { host } = useContext<AppContextProps>(AppContext);
 
   // Submit API call
   useEffect(() => {
@@ -40,7 +44,7 @@ export function ISBUpdate({
       });
       try {
         const response = await fetch(
-          `${getBaseHref()}/api/v1/namespaces/${namespaceId}/isb-services/${isbId}?dry-run=false`,
+          `${host}${getBaseHref()}/api/v1/namespaces/${namespaceId}/isb-services/${isbId}?dry-run=false`,
           {
             method: "PUT",
             headers: {
@@ -85,7 +89,7 @@ export function ISBUpdate({
     if (submitPayload) {
       postData();
     }
-  }, [namespaceId, isbId, submitPayload, onUpdateComplete]);
+  }, [namespaceId, isbId, submitPayload, onUpdateComplete, host]);
 
   // Validation API call
   useEffect(() => {
@@ -93,7 +97,7 @@ export function ISBUpdate({
       setLoading(true);
       try {
         const response = await fetch(
-          `${getBaseHref()}/api/v1/namespaces/${namespaceId}/isb-services/${isbId}?dry-run=true`,
+          `${host}${getBaseHref()}/api/v1/namespaces/${namespaceId}/isb-services/${isbId}?dry-run=true`,
           {
             method: "PUT",
             headers: {
@@ -128,13 +132,13 @@ export function ISBUpdate({
     if (validationPayload) {
       postData();
     }
-  }, [namespaceId, isbId, validationPayload]);
+  }, [namespaceId, isbId, validationPayload, host]);
 
   const handleValidate = useCallback((value: string) => {
     let parsed: any;
     try {
       parsed = YAML.parse(value);
-    } catch (e) {
+    } catch (e: any) {
       setValidationMessage({
         type: "error",
         message: `Invalid YAML: ${e.message}`,
@@ -156,7 +160,7 @@ export function ISBUpdate({
     let parsed: any;
     try {
       parsed = YAML.parse(value);
-    } catch (e) {
+    } catch (e: any) {
       setValidationMessage({
         type: "error",
         message: `Invalid YAML: ${e.message}`,
@@ -208,10 +212,12 @@ export function ISBUpdate({
         sx={{
           display: "flex",
           flexDirection: "row",
-          marginBottom: "2rem",
+          marginBottom: "3.2rem",
         }}
       >
-        <span className="isb-spec-header-text">{`Edit ISB Service: ${isbId}`}</span>
+        <span className="isb-spec-header-text">
+          {titleOverride ? titleOverride : `Edit ISB Service: ${isbId}`}
+        </span>
       </Box>
       <SpecEditor
         initialYaml={initialYaml}

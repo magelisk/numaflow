@@ -20,9 +20,12 @@ import (
 	"strings"
 
 	"github.com/spf13/cobra"
+	"sigs.k8s.io/controller-runtime/pkg/manager/signals"
 
+	"github.com/numaproj/numaflow/pkg/shared/logging"
 	sharedutil "github.com/numaproj/numaflow/pkg/shared/util"
 	svrcmd "github.com/numaproj/numaflow/server/cmd/server"
+	"github.com/numaproj/numaflow/server/common"
 )
 
 func NewServerCommand() *cobra.Command {
@@ -32,8 +35,8 @@ func NewServerCommand() *cobra.Command {
 		namespaced       bool
 		managedNamespace string
 		baseHref         string
+		readOnly         bool
 		disableAuth      bool
-		dexServerAddr    string
 		serverAddr       string
 	)
 
@@ -53,12 +56,14 @@ func NewServerCommand() *cobra.Command {
 				Namespaced:       namespaced,
 				ManagedNamespace: managedNamespace,
 				BaseHref:         baseHref,
+				ReadOnly:         readOnly,
 				DisableAuth:      disableAuth,
-				DexServerAddr:    dexServerAddr,
+				DexServerAddr:    common.NumaflowDexServerAddr,
 				ServerAddr:       serverAddr,
 			}
 			server := svrcmd.NewServer(opts)
-			server.Start()
+			log := logging.NewLogger().Named("server")
+			server.Start(logging.WithLogger(signals.SetupSignalHandler(), log))
 		},
 	}
 	command.Flags().BoolVar(&insecure, "insecure", sharedutil.LookupEnvBoolOr("NUMAFLOW_SERVER_INSECURE", false), "Whether to disable TLS, defaults to false.")
@@ -66,8 +71,8 @@ func NewServerCommand() *cobra.Command {
 	command.Flags().BoolVar(&namespaced, "namespaced", sharedutil.LookupEnvBoolOr("NUMAFLOW_SERVER_NAMESPACED", false), "Whether to run in namespaced scope, defaults to false.")
 	command.Flags().StringVar(&managedNamespace, "managed-namespace", sharedutil.LookupEnvStringOr("NUMAFLOW_SERVER_MANAGED_NAMESPACE", sharedutil.LookupEnvStringOr("NAMESPACE", "numaflow-system")), "The namespace that the server watches when \"--namespaced\" is \"true\".")
 	command.Flags().StringVar(&baseHref, "base-href", sharedutil.LookupEnvStringOr("NUMAFLOW_SERVER_BASE_HREF", "/"), "Base href for Numaflow server, defaults to '/'.")
+	command.Flags().BoolVar(&readOnly, "readonly", sharedutil.LookupEnvBoolOr("NUMAFLOW_SERVER_READONLY", false), "Whether to enable read only view for the UX server, defaults to false.")
 	command.Flags().BoolVar(&disableAuth, "disable-auth", sharedutil.LookupEnvBoolOr("NUMAFLOW_SERVER_DISABLE_AUTH", false), "Whether to disable authentication and authorization, defaults to false.")
-	command.Flags().StringVar(&dexServerAddr, "dex-server-addr", sharedutil.LookupEnvStringOr("NUMAFLOW_SERVER_DEX_SERVER_ADDR", "http://numaflow-dex-server:5556/dex"), "The address of the Dex server.")
 	command.Flags().StringVar(&serverAddr, "server-addr", sharedutil.LookupEnvStringOr("NUMAFLOW_SERVER_ADDRESS", "https://localhost:8443"), "The external address of the Numaflow server.")
 	return command
 }

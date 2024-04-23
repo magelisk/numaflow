@@ -94,7 +94,7 @@ func TestFromError(t *testing.T) {
 			name: "good_unknown_1",
 			args: args{
 				err: &UDFError{
-					errKind:    2,
+					errKind:    3,
 					errMessage: "Unknown Error",
 				},
 			},

@@ -68,7 +68,7 @@ func TestRedisQRead_Read(t *testing.T) {
 
 	// Add some data
 	startTime := time.Unix(1636470000, 0)
-	messages := testutils.BuildTestWriteMessages(count, startTime)
+	messages := testutils.BuildTestWriteMessages(count, startTime, nil)
 	for _, msg := range messages {
 		err := client.Client.XAdd(ctx, &redis.XAddArgs{
 			Stream: rqr.GetStreamName(),
@@ -100,7 +100,7 @@ func TestRedisCheckBacklog(t *testing.T) {
 
 	// Add some data
 	startTime := time.Unix(1636470000, 0)
-	messages := testutils.BuildTestWriteMessages(count, startTime)
+	messages := testutils.BuildTestWriteMessages(count, startTime, nil)
 	for _, msg := range messages {
 		err := client.Client.XAdd(ctx, &redis.XAddArgs{
 			Stream: rqr.GetStreamName(),
@@ -300,7 +300,7 @@ type ReadWritePerformance struct {
 type forwardReadWritePerformance struct {
 }
 
-func (f forwardReadWritePerformance) WhereTo(_ []string, _ []string) ([]forwarder.VertexBuffer, error) {
+func (f forwardReadWritePerformance) WhereTo(_ []string, _ []string, _ string) ([]forwarder.VertexBuffer, error) {
 	return []forwarder.VertexBuffer{{
 		ToVertexName:         "to1",
 		ToVertexPartitionIdx: 0,
@@ -392,7 +392,7 @@ func (suite *ReadWritePerformance) TestReadWriteLatency() {
 	suite.False(suite.rqw.IsFull())
 	var writeMessages = make([]isb.Message, 0, suite.count)
 
-	writeMessages = append(writeMessages, testutils.BuildTestWriteMessages(suite.count, testStartTime)...)
+	writeMessages = append(writeMessages, testutils.BuildTestWriteMessages(suite.count, testStartTime, nil)...)
 
 	stopped := suite.isdf.Start()
 
@@ -443,7 +443,7 @@ func (suite *ReadWritePerformance) TestReadWriteLatencyPipelining() {
 	suite.False(suite.rqw.IsFull())
 	var writeMessages = make([]isb.Message, 0, suite.count)
 
-	writeMessages = append(writeMessages, testutils.BuildTestWriteMessages(suite.count, testStartTime)...)
+	writeMessages = append(writeMessages, testutils.BuildTestWriteMessages(suite.count, testStartTime, nil)...)
 
 	stopped := suite.isdf.Start()
 

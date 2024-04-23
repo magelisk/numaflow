@@ -1,5 +1,5 @@
 import React, { useCallback, useContext, useMemo, createContext } from "react";
-import { useParams } from "react-router-dom";
+import { useLocation } from "react-router-dom";
 import CircularProgress from "@mui/material/CircularProgress";
 import Box from "@mui/material/Box";
 import { usePipelineViewFetch } from "../../../utils/fetcherHooks/pipelineViewFetch";
@@ -10,6 +10,7 @@ import {
   SummarySectionType,
 } from "../../common/SummaryPageLayout";
 import { usePipelineSummaryFetch } from "../../../utils/fetchWrappers/pipelineFetch";
+import { usePipelineHealthFetch } from "../../../utils/fetchWrappers/pipelineHealthFetch";
 import { PipelineStatus } from "./partials/PipelineStatus";
 import { PipelineSummaryStatus } from "./partials/PipelineSummaryStatus";
 import { PipelineISBStatus } from "./partials/PipelineISBStatus";
@@ -17,7 +18,7 @@ import { PipelineISBSummaryStatus } from "./partials/PipelineISBSummaryStatus";
 import { AppContextProps } from "../../../types/declarations/app";
 import { AppContext } from "../../../App";
 import { ErrorDisplay } from "../../common/ErrorDisplay";
-import { UNKNOWN } from "../../../utils";
+import { GetConsolidatedHealthStatus, UNKNOWN } from "../../../utils";
 import { SidebarType } from "../../common/SlidingSidebar";
 
 import "./style.css";
@@ -31,7 +32,10 @@ export const GeneratorColorContext = createContext<Map<string, string>>(
 );
 
 export function Pipeline({ namespaceId: nsIdProp }: PipelineProps) {
-  const { namespaceId: nsIdParam, pipelineId } = useParams();
+  const location = useLocation();
+  const query = new URLSearchParams(location.search);
+  const pipelineId = query.get("pipeline") || "";
+  const nsIdParam = query.get("namespace") || "";
   const namespaceId = nsIdProp || nsIdParam;
   const { addError, setSidebarProps } = useContext<AppContextProps>(AppContext);
   const {
@@ -52,10 +56,18 @@ export function Pipeline({ namespaceId: nsIdProp }: PipelineProps) {
     refresh: graphRefresh,
   } = usePipelineViewFetch(namespaceId, pipelineId, addError);
 
+  const {
+    data: healthData,
+    loading: healthLoading,
+    error: healthError,
+    refresh: healthRefresh,
+  } = usePipelineHealthFetch({ namespaceId, pipelineId, addError });
+
   const refresh = useCallback(() => {
     graphRefresh();
     summaryRefresh();
-  }, [graphRefresh, summaryRefresh]);
+    healthRefresh();
+  }, [graphRefresh, summaryRefresh, healthRefresh]);
 
   const handleK8sEventsClick = useCallback(() => {
     if (!namespaceId || !pipelineId || !setSidebarProps) {
@@ -79,8 +91,23 @@ export function Pipeline({ namespaceId: nsIdProp }: PipelineProps) {
     });
   }, [namespaceId, pipelineId, setSidebarProps, vertices]);
 
+  const getHealth = useCallback(
+    (pipelineStatus: string) => {
+      if (healthData) {
+        const { resourceHealthStatus, dataHealthStatus } = healthData;
+        return GetConsolidatedHealthStatus(
+          pipelineStatus,
+          resourceHealthStatus,
+          dataHealthStatus
+        );
+      }
+      return UNKNOWN;
+    },
+    [healthData]
+  );
+
   const summarySections: SummarySection[] = useMemo(() => {
-    if (summaryLoading) {
+    if (summaryLoading || healthLoading) {
       return [
         {
           type: SummarySectionType.CUSTOM,
@@ -93,7 +120,7 @@ export function Pipeline({ namespaceId: nsIdProp }: PipelineProps) {
         },
       ];
     }
-    if (error) {
+    if (error || healthError) {
       return [
         {
           type: SummarySectionType.CUSTOM,
@@ -101,7 +128,7 @@ export function Pipeline({ namespaceId: nsIdProp }: PipelineProps) {
             <ErrorDisplay
               key="pipeline-summary-error"
               title="Error loading pipeline summary"
-              message={error}
+              message={error || healthError || ""}
             />
           ),
         },
@@ -113,6 +140,7 @@ export function Pipeline({ namespaceId: nsIdProp }: PipelineProps) {
     const pipelineData = data?.pipelineData;
     const isbData = data?.isbData;
     const pipelineStatus = pipelineData?.pipeline?.status?.phase || UNKNOWN;
+    const pipelineHealthStatus = getHealth(pipelineStatus);
     return [
       // pipeline collection
       {
@@ -120,7 +148,8 @@ export function Pipeline({ namespaceId: nsIdProp }: PipelineProps) {
         customComponent: (
           <PipelineStatus
             status={pipelineStatus}
-            healthStatus={pipelineData?.status}
+            healthStatus={pipelineHealthStatus}
+            healthData={healthData}
             key={"pipeline-status"}
           />
         ),
@@ -165,7 +194,16 @@ export function Pipeline({ namespaceId: nsIdProp }: PipelineProps) {
         ),
       },
     ];
-  }, [summaryLoading, error, data, pipelineId, refresh]);
+  }, [
+    summaryLoading,
+    error,
+    data,
+    pipelineId,
+    refresh,
+    healthData,
+    healthLoading,
+    healthError,
+  ]);
 
   const content = useMemo(() => {
     if (pipelineErr || buffersErr) {
@@ -175,7 +213,7 @@ export function Pipeline({ namespaceId: nsIdProp }: PipelineProps) {
             display: "flex",
             flexDirection: "row",
             justifyContent: "space-between",
-            margin: "0 1rem",
+            margin: "0 1.6rem",
             height: "100%",
           }}
         >

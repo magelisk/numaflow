@@ -5,7 +5,7 @@ Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
 You may obtain a copy of the License at
 
-    http://www.apache.org/licenses/LICENSE-2.0
+	http://www.apache.org/licenses/LICENSE-2.0
 
 Unless required by applicable law or agreed to in writing, software
 distributed under the License is distributed on an "AS IS" BASIS,
@@ -13,7 +13,6 @@ WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 See the License for the specific language governing permissions and
 limitations under the License.
 */
-
 package reduce
 
 import (
@@ -35,7 +34,8 @@ import (
 	"github.com/numaproj/numaflow/pkg/isb/stores/simplebuffer"
 	"github.com/numaproj/numaflow/pkg/reduce/pbq"
 	"github.com/numaproj/numaflow/pkg/reduce/pbq/partition"
-	"github.com/numaproj/numaflow/pkg/reduce/pbq/store/memory"
+	"github.com/numaproj/numaflow/pkg/reduce/pbq/wal"
+	"github.com/numaproj/numaflow/pkg/reduce/pbq/wal/aligned/memory"
 	"github.com/numaproj/numaflow/pkg/reduce/pnf"
 	"github.com/numaproj/numaflow/pkg/shared/kvs"
 	"github.com/numaproj/numaflow/pkg/watermark/entity"
@@ -43,7 +43,9 @@ import (
 	"github.com/numaproj/numaflow/pkg/watermark/publish"
 	wmstore "github.com/numaproj/numaflow/pkg/watermark/store"
 	"github.com/numaproj/numaflow/pkg/watermark/wmb"
+	"github.com/numaproj/numaflow/pkg/window"
 	"github.com/numaproj/numaflow/pkg/window/strategy/fixed"
+	"github.com/numaproj/numaflow/pkg/window/strategy/session"
 )
 
 const pipelineName = "testPipeline"
@@ -78,7 +80,7 @@ type EventTypeWMProgressor struct {
 	m          sync.Mutex
 }
 
-func (e *EventTypeWMProgressor) PublishWatermark(watermark wmb.Watermark, offset isb.Offset, i int32) {
+func (e *EventTypeWMProgressor) PublishWatermark(watermark wmb.Watermark, offset isb.Offset, _ int32) {
 	e.m.Lock()
 	defer e.m.Unlock()
 	e.watermarks[offset.String()] = watermark
@@ -96,7 +98,7 @@ func (e *EventTypeWMProgressor) Close() error {
 	return nil
 }
 
-func (e *EventTypeWMProgressor) ComputeWatermark(offset isb.Offset, partition int32) wmb.Watermark {
+func (e *EventTypeWMProgressor) ComputeWatermark(offset isb.Offset, _ int32) wmb.Watermark {
 	e.lastOffset = offset
 	return e.getWatermark()
 }
@@ -122,25 +124,28 @@ type PayloadForTest struct {
 }
 
 type myForwardTestRoundRobin struct {
-	count int
+	count atomic.Int32
 }
 
-func (f *myForwardTestRoundRobin) WhereTo(_ []string, _ []string) ([]forwarder.VertexBuffer, error) {
+func (f *myForwardTestRoundRobin) WhereTo(_ []string, _ []string, s string) ([]forwarder.VertexBuffer, error) {
 	var output = []forwarder.VertexBuffer{{
 		ToVertexName:         "reduce-to-vertex",
-		ToVertexPartitionIdx: int32(f.count % 2),
+		ToVertexPartitionIdx: f.count.Load() % 2,
 	}}
-	f.count++
+	f.count.Add(1)
 	return output, nil
 }
 
 type CounterReduceTest struct {
 }
 
-// Reduce returns a result with the count of messages
-func (f CounterReduceTest) ApplyReduce(_ context.Context, partitionID *partition.ID, messageStream <-chan *isb.ReadMessage) ([]*isb.WriteMessage, error) {
+func (f CounterReduceTest) ApplyReduce(_ context.Context, partitionID *partition.ID, requestStream <-chan *window.TimedWindowRequest) (<-chan *window.TimedWindowResponse, <-chan error) {
+	var (
+		errCh      = make(chan error)
+		responseCh = make(chan *window.TimedWindowResponse, 1)
+	)
 	count := 0
-	for range messageStream {
+	for range requestStream {
 		count += 1
 	}
 
@@ -149,22 +154,94 @@ func (f CounterReduceTest) ApplyReduce(_ context.Context, partitionID *partition
 	ret := isb.Message{
 		Header: isb.Header{
 			MessageInfo: isb.MessageInfo{
-				EventTime: partitionID.End,
+				EventTime: partitionID.End.Add(-1 * time.Millisecond),
 			},
 			ID:   "msgID",
 			Keys: []string{"result"},
 		},
 		Body: isb.Body{Payload: b},
 	}
-	return []*isb.WriteMessage{
-		{
+	response := &window.TimedWindowResponse{
+		WriteMessage: &isb.WriteMessage{
 			Message: ret,
 			Tags:    nil,
 		},
-	}, nil
+		Window: window.NewAlignedTimedWindow(partitionID.Start, partitionID.End, partitionID.Slot),
+	}
+	responseCh <- response
+	return responseCh, errCh
 }
 
-func (f CounterReduceTest) WhereTo(_ []string, _ []string) ([]forwarder.VertexBuffer, error) {
+func (f CounterReduceTest) WaitUntilReady(_ context.Context) error {
+	return nil
+}
+
+func (f CounterReduceTest) CloseConn(_ context.Context) error {
+	return nil
+}
+
+func (f CounterReduceTest) WhereTo(_ []string, _ []string, s string) ([]forwarder.VertexBuffer, error) {
+	return []forwarder.VertexBuffer{{
+		ToVertexName:         "reduce-to-vertex",
+		ToVertexPartitionIdx: 0,
+	}}, nil
+}
+
+type SessionSumReduceTest struct {
+}
+
+func (s SessionSumReduceTest) ApplyReduce(ctx context.Context, partitionID *partition.ID, messageStream <-chan *window.TimedWindowRequest) (<-chan *window.TimedWindowResponse, <-chan error) {
+	var (
+		errCh      = make(chan error)
+		responseCh = make(chan *window.TimedWindowResponse, 10)
+	)
+	go func() {
+		for msg := range messageStream {
+			if msg.Operation == window.Close {
+				for _, win := range msg.Windows {
+					sum := 0
+					if win.Keys()[0] == "even" {
+						sum = 6000
+					} else {
+						sum = 5940
+					}
+					payload := PayloadForTest{Key: win.Keys()[0], Value: sum}
+					b, _ := json.Marshal(payload)
+					outputMsg := &isb.WriteMessage{
+						Message: isb.Message{
+							Header: isb.Header{
+								MessageInfo: isb.MessageInfo{
+									EventTime: partitionID.End.Add(-1 * time.Millisecond),
+								},
+								ID:   "msgID",
+								Keys: []string{win.Keys()[0]},
+							},
+							Body: isb.Body{Payload: b},
+						},
+						Tags: nil,
+					}
+					response := &window.TimedWindowResponse{
+						WriteMessage: outputMsg,
+						Window:       window.NewAlignedTimedWindow(partitionID.Start, partitionID.End, partitionID.Slot),
+					}
+					responseCh <- response
+				}
+			}
+		}
+	}()
+
+	return responseCh, errCh
+}
+
+func (s SessionSumReduceTest) WaitUntilReady(ctx context.Context) error {
+	return nil
+}
+
+func (s SessionSumReduceTest) CloseConn(ctx context.Context) error {
+	return nil
+}
+
+func (s SessionSumReduceTest) WhereTo(_ []string, _ []string, s2 string) ([]forwarder.VertexBuffer, error) {
 	return []forwarder.VertexBuffer{{
 		ToVertexName:         "reduce-to-vertex",
 		ToVertexPartitionIdx: 0,
@@ -174,17 +251,20 @@ func (f CounterReduceTest) WhereTo(_ []string, _ []string) ([]forwarder.VertexBu
 type SumReduceTest struct {
 }
 
-func (s SumReduceTest) ApplyReduce(ctx context.Context, partitionID *partition.ID, messageStream <-chan *isb.ReadMessage) ([]*isb.WriteMessage, error) {
+func (s SumReduceTest) ApplyReduce(_ context.Context, partitionID *partition.ID, requestsCh <-chan *window.TimedWindowRequest) (<-chan *window.TimedWindowResponse, <-chan error) {
+	var (
+		errCh      = make(chan error)
+		responseCh = make(chan *window.TimedWindowResponse, 2)
+	)
+
 	sums := make(map[string]int)
 
-	for msg := range messageStream {
+	for msg := range requestsCh {
 		var payload PayloadForTest
-		_ = json.Unmarshal(msg.Payload, &payload)
-		key := msg.Keys
+		_ = json.Unmarshal(msg.ReadMessage.Payload, &payload)
+		key := msg.ReadMessage.Keys
 		sums[key[0]] += payload.Value
 	}
-
-	msgs := make([]*isb.WriteMessage, 0)
 
 	for k, s := range sums {
 		payload := PayloadForTest{Key: k, Value: s}
@@ -193,7 +273,7 @@ func (s SumReduceTest) ApplyReduce(ctx context.Context, partitionID *partition.I
 			Message: isb.Message{
 				Header: isb.Header{
 					MessageInfo: isb.MessageInfo{
-						EventTime: partitionID.End,
+						EventTime: partitionID.End.Add(-1 * time.Millisecond),
 					},
 					ID:   "msgID",
 					Keys: []string{k},
@@ -202,32 +282,48 @@ func (s SumReduceTest) ApplyReduce(ctx context.Context, partitionID *partition.I
 			},
 			Tags: nil,
 		}
-
-		msgs = append(msgs, msg)
+		response := &window.TimedWindowResponse{
+			WriteMessage: msg,
+			Window:       window.NewAlignedTimedWindow(partitionID.Start, partitionID.End, partitionID.Slot),
+		}
+		responseCh <- response
 	}
 
-	return msgs, nil
+	return responseCh, errCh
+}
+
+func (s SumReduceTest) WaitUntilReady(_ context.Context) error {
+	return nil
+}
+
+func (s SumReduceTest) CloseConn(_ context.Context) error {
+	return nil
 }
 
 type MaxReduceTest struct {
 }
 
-func (m MaxReduceTest) ApplyReduce(ctx context.Context, partitionID *partition.ID, messageStream <-chan *isb.ReadMessage) ([]*isb.WriteMessage, error) {
+func (m MaxReduceTest) ApplyReduce(_ context.Context, partitionID *partition.ID, requestCh <-chan *window.TimedWindowRequest) (<-chan *window.TimedWindowResponse, <-chan error) {
+
+	var (
+		errCh      = make(chan error)
+		responseCh = make(chan *window.TimedWindowResponse, 2)
+	)
+
 	mx := math.MinInt64
 	maxMap := make(map[string]int)
-	for msg := range messageStream {
+	for req := range requestCh {
 		var payload PayloadForTest
-		_ = json.Unmarshal(msg.Payload, &payload)
-		if max, ok := maxMap[msg.Keys[0]]; ok {
+		_ = json.Unmarshal(req.ReadMessage.Payload, &payload)
+		if max, ok := maxMap[req.ReadMessage.Keys[0]]; ok {
 			mx = max
 		}
 		if payload.Value > mx {
 			mx = payload.Value
-			maxMap[msg.Keys[0]] = mx
+			maxMap[req.ReadMessage.Keys[0]] = mx
 		}
 	}
 
-	result := make([]*isb.WriteMessage, 0)
 	for k, max := range maxMap {
 		payload := PayloadForTest{Key: k, Value: max}
 		b, _ := json.Marshal(payload)
@@ -235,7 +331,7 @@ func (m MaxReduceTest) ApplyReduce(ctx context.Context, partitionID *partition.I
 			Message: isb.Message{
 				Header: isb.Header{
 					MessageInfo: isb.MessageInfo{
-						EventTime: partitionID.End,
+						EventTime: partitionID.End.Add(-1 * time.Millisecond),
 					},
 					ID:   "msgID",
 					Keys: []string{k},
@@ -245,10 +341,22 @@ func (m MaxReduceTest) ApplyReduce(ctx context.Context, partitionID *partition.I
 			Tags: nil,
 		}
 
-		result = append(result, ret)
+		response := &window.TimedWindowResponse{
+			WriteMessage: ret,
+			Window:       window.NewAlignedTimedWindow(partitionID.Start, partitionID.End, partitionID.Slot),
+		}
+		responseCh <- response
 	}
 
-	return result, nil
+	return responseCh, errCh
+}
+
+func (m MaxReduceTest) WaitUntilReady(_ context.Context) error {
+	return nil
+}
+
+func (m MaxReduceTest) CloseConn(_ context.Context) error {
+	return nil
 }
 
 // read from simple buffer
@@ -279,12 +387,11 @@ func TestDataForward_StartWithNoOpWM(t *testing.T) {
 		toVertexName: {to},
 	}
 
-	var err error
-	var pbqManager *pbq.Manager
-
+	// create store manager
+	storeManager := memory.NewMemManager(memory.WithStoreSize(100))
 	// create pbqManager
-	pbqManager, err = pbq.NewManager(child, "reduce", pipelineName, 0, memory.NewMemoryStores(memory.WithStoreSize(100)),
-		pbq.WithReadTimeout(1*time.Second), pbq.WithChannelBufferSize(10))
+	pbqManager, err := pbq.NewManager(child, "reduce", pipelineName, 0, storeManager,
+		window.Aligned, pbq.WithReadTimeout(1*time.Second), pbq.WithChannelBufferSize(10))
 	assert.NoError(t, err)
 
 	publisher := map[string]publish.Publisher{
@@ -298,15 +405,16 @@ func TestDataForward_StartWithNoOpWM(t *testing.T) {
 		}
 	}()
 
-	// create new fixed window of (windowTime)
-	window := fixed.NewFixed(windowTime)
+	// create new fixed windower of (windowTime)
+	windower := fixed.NewWindower(windowTime, keyedVertex)
 
-	idleManager := wmb.NewIdleManager(len(toBuffer))
-	op := pnf.NewOrderedProcessor(child, keyedVertex, CounterReduceTest{}, toBuffer, pbqManager, CounterReduceTest{}, publisher, idleManager)
+	idleManager, err := wmb.NewIdleManager(1, len(toBuffer))
+	assert.NoError(t, err)
+	op := pnf.NewProcessAndForward(child, keyedVertex, CounterReduceTest{}, toBuffer, pbqManager, CounterReduceTest{}, publisher, idleManager, windower)
 
 	var reduceDataForwarder *DataForward
-	reduceDataForwarder, err = NewDataForward(child, keyedVertex, fromBuffer, toBuffer, pbqManager, CounterReduceTest{}, wmpublisher, publisher,
-		window, idleManager, op, WithReadBatchSize(10))
+	reduceDataForwarder, err = NewDataForward(child, keyedVertex, fromBuffer, toBuffer, pbqManager, storeManager, CounterReduceTest{}, wmpublisher, publisher,
+		windower, idleManager, op, WithReadBatchSize(10))
 	assert.NoError(t, err)
 
 	go reduceDataForwarder.Start()
@@ -369,10 +477,13 @@ func TestReduceDataForward_IdleWM(t *testing.T) {
 		toVertexName: {toBuffer},
 	}
 
+	// create store manager
+	storeManager := memory.NewMemManager(memory.WithStoreSize(1000))
+
 	// create pbq manager
 	var pbqManager *pbq.Manager
-	pbqManager, err = pbq.NewManager(ctx, "reduce", pipelineName, 0, memory.NewMemoryStores(memory.WithStoreSize(1000)),
-		pbq.WithReadTimeout(1*time.Second), pbq.WithChannelBufferSize(10))
+	pbqManager, err = pbq.NewManager(ctx, "reduce", pipelineName, 0, storeManager,
+		window.Aligned, pbq.WithReadTimeout(1*time.Second), pbq.WithChannelBufferSize(10))
 	assert.NoError(t, err)
 
 	// create in memory watermark publisher and fetcher
@@ -392,14 +503,15 @@ func TestReduceDataForward_IdleWM(t *testing.T) {
 		}
 	}()
 
-	// create a fixed window of 5s
-	window := fixed.NewFixed(5 * time.Second)
-	idleManager := wmb.NewIdleManager(len(toBuffers))
-	op := pnf.NewOrderedProcessor(ctx, keyedVertex, CounterReduceTest{}, toBuffers, pbqManager, CounterReduceTest{}, publisherMap, idleManager)
+	// create a fixed windower of 5s
+	windower := fixed.NewWindower(5*time.Second, keyedVertex)
+	idleManager, err := wmb.NewIdleManager(1, len(toBuffers))
+	assert.NoError(t, err)
+	op := pnf.NewProcessAndForward(ctx, keyedVertex, CounterReduceTest{}, toBuffers, pbqManager, CounterReduceTest{}, publisherMap, idleManager, windower)
 
 	var reduceDataForward *DataForward
-	reduceDataForward, err = NewDataForward(ctx, keyedVertex, fromBuffer, toBuffers, pbqManager, CounterReduceTest{}, f, publisherMap,
-		window, idleManager, op, WithReadBatchSize(10))
+	reduceDataForward, err = NewDataForward(ctx, keyedVertex, fromBuffer, toBuffers, pbqManager, storeManager, CounterReduceTest{}, f, publisherMap,
+		windower, idleManager, op, WithReadBatchSize(10))
 	assert.NoError(t, err)
 
 	// start the forwarder
@@ -537,8 +649,8 @@ func TestReduceDataForward_IdleWM(t *testing.T) {
 	assert.Equal(t, isb.Data, msgs[1].Kind)
 	// in the test ApplyUDF above we've set the final message to have ID="msgID"
 	assert.Equal(t, "msgID", msgs[1].ID)
-	// in the test ApplyUDF above we've set the final message to have eventTime = partitionID.End
-	assert.Equal(t, int64(1679961605000), msgs[1].EventTime.UnixMilli())
+	// in the test ApplyUDF above we've set the final message to have eventTime = partitionID.End-1ms
+	assert.Equal(t, int64(1679961604999), msgs[1].EventTime.UnixMilli())
 	var result PayloadForTest
 	err = json.Unmarshal(msgs[1].Body.Payload, &result)
 	assert.NoError(t, err)
@@ -581,10 +693,13 @@ func TestReduceDataForward_Count(t *testing.T) {
 		toVertexName: {buffer},
 	}
 
+	// create store manager
+	storeManager := memory.NewMemManager(memory.WithStoreSize(1000))
+
 	// create pbq manager
 	var pbqManager *pbq.Manager
-	pbqManager, err = pbq.NewManager(ctx, "reduce", pipelineName, 0, memory.NewMemoryStores(memory.WithStoreSize(1000)),
-		pbq.WithReadTimeout(1*time.Second), pbq.WithChannelBufferSize(10))
+	pbqManager, err = pbq.NewManager(ctx, "reduce", pipelineName, 0, storeManager,
+		window.Aligned, pbq.WithReadTimeout(1*time.Second), pbq.WithChannelBufferSize(10))
 	assert.NoError(t, err)
 
 	// create in memory watermark publisher and fetcher
@@ -599,13 +714,14 @@ func TestReduceDataForward_Count(t *testing.T) {
 	}()
 
 	// create a fixed window of 60s
-	window := fixed.NewFixed(60 * time.Second)
-	idleManager := wmb.NewIdleManager(len(toBuffer))
-	op := pnf.NewOrderedProcessor(ctx, keyedVertex, CounterReduceTest{}, toBuffer, pbqManager, CounterReduceTest{}, publisherMap, idleManager)
+	windower := fixed.NewWindower(60*time.Second, keyedVertex)
+	idleManager, err := wmb.NewIdleManager(1, len(toBuffer))
+	assert.NoError(t, err)
+	op := pnf.NewProcessAndForward(ctx, keyedVertex, CounterReduceTest{}, toBuffer, pbqManager, CounterReduceTest{}, publisherMap, idleManager, windower)
 
 	var reduceDataForward *DataForward
-	reduceDataForward, err = NewDataForward(ctx, keyedVertex, fromBuffer, toBuffer, pbqManager, CounterReduceTest{}, f, publisherMap,
-		window, idleManager, op, WithReadBatchSize(10))
+	reduceDataForward, err = NewDataForward(ctx, keyedVertex, fromBuffer, toBuffer, pbqManager, storeManager, CounterReduceTest{}, f, publisherMap,
+		windower, idleManager, op, WithReadBatchSize(10))
 	assert.NoError(t, err)
 
 	// start the forwarder
@@ -662,10 +778,13 @@ func TestReduceDataForward_AllowedLatencyCount(t *testing.T) {
 		toVertexName: {buffer},
 	}
 
+	// create store manager
+	storeManager := memory.NewMemManager(memory.WithStoreSize(1000))
+
 	// create pbq manager
 	var pbqManager *pbq.Manager
-	pbqManager, err = pbq.NewManager(ctx, "reduce", pipelineName, 0, memory.NewMemoryStores(memory.WithStoreSize(1000)),
-		pbq.WithReadTimeout(1*time.Second), pbq.WithChannelBufferSize(10))
+	pbqManager, err = pbq.NewManager(ctx, "reduce", pipelineName, 0, storeManager,
+		window.Aligned, pbq.WithReadTimeout(1*time.Second), pbq.WithChannelBufferSize(10))
 	assert.NoError(t, err)
 
 	// create in memory watermark publisher and fetcher
@@ -679,16 +798,17 @@ func TestReduceDataForward_AllowedLatencyCount(t *testing.T) {
 		}
 	}()
 
-	// create a fixed window of 10s
-	window := fixed.NewFixed(5 * time.Second)
+	// create a fixed windower of 10s
+	windower := fixed.NewWindower(5*time.Second, keyedVertex)
 
-	idleManager := wmb.NewIdleManager(len(toBuffer))
-	op := pnf.NewOrderedProcessor(ctx, keyedVertex, CounterReduceTest{}, toBuffer, pbqManager, CounterReduceTest{}, publisherMap, idleManager)
+	idleManager, err := wmb.NewIdleManager(1, len(toBuffer))
+	assert.NoError(t, err)
+	op := pnf.NewProcessAndForward(ctx, keyedVertex, CounterReduceTest{}, toBuffer, pbqManager, CounterReduceTest{}, publisherMap, idleManager, windower)
 
 	var reduceDataForward *DataForward
 	allowedLatency := 1000
-	reduceDataForward, err = NewDataForward(ctx, keyedVertex, fromBuffer, toBuffer, pbqManager, CounterReduceTest{}, f, publisherMap,
-		window, idleManager, op, WithReadBatchSize(int64(batchSize)),
+	reduceDataForward, err = NewDataForward(ctx, keyedVertex, fromBuffer, toBuffer, pbqManager, storeManager, CounterReduceTest{}, f, publisherMap,
+		windower, idleManager, op, WithReadBatchSize(int64(batchSize)),
 		WithAllowedLateness(time.Duration(allowedLatency)*time.Millisecond),
 	)
 	assert.NoError(t, err)
@@ -747,10 +867,13 @@ func TestReduceDataForward_Sum(t *testing.T) {
 		toVertexName: {buffer},
 	}
 
+	// create store manager
+	storeManager := memory.NewMemManager(memory.WithStoreSize(1000))
+
 	// create pbq manager
 	var pbqManager *pbq.Manager
-	pbqManager, err = pbq.NewManager(ctx, "reduce", pipelineName, 0, memory.NewMemoryStores(memory.WithStoreSize(1000)),
-		pbq.WithReadTimeout(1*time.Second), pbq.WithChannelBufferSize(10))
+	pbqManager, err = pbq.NewManager(ctx, "reduce", pipelineName, 0, storeManager,
+		window.Aligned, pbq.WithReadTimeout(1*time.Second), pbq.WithChannelBufferSize(10))
 	assert.NoError(t, err)
 
 	// create in memory watermark publisher and fetcher
@@ -765,13 +888,14 @@ func TestReduceDataForward_Sum(t *testing.T) {
 	}()
 
 	// create a fixed window of 2 minutes
-	window := fixed.NewFixed(2 * time.Minute)
-	idleManager := wmb.NewIdleManager(len(toBuffer))
-	op := pnf.NewOrderedProcessor(ctx, keyedVertex, SumReduceTest{}, toBuffer, pbqManager, CounterReduceTest{}, publishersMap, idleManager)
+	windower := fixed.NewWindower(2*time.Minute, keyedVertex)
+	idleManager, err := wmb.NewIdleManager(1, len(toBuffer))
+	assert.NoError(t, err)
+	op := pnf.NewProcessAndForward(ctx, keyedVertex, SumReduceTest{}, toBuffer, pbqManager, CounterReduceTest{}, publishersMap, idleManager, windower)
 
 	var reduceDataForward *DataForward
-	reduceDataForward, err = NewDataForward(ctx, keyedVertex, fromBuffer, toBuffer, pbqManager, CounterReduceTest{}, f, publishersMap,
-		window, idleManager, op, WithReadBatchSize(10))
+	reduceDataForward, err = NewDataForward(ctx, keyedVertex, fromBuffer, toBuffer, pbqManager, storeManager, CounterReduceTest{}, f, publishersMap,
+		windower, idleManager, op, WithReadBatchSize(10))
 	assert.NoError(t, err)
 
 	// start the forwarder
@@ -829,10 +953,13 @@ func TestReduceDataForward_Max(t *testing.T) {
 		toVertexName: {buffer},
 	}
 
+	// create store manager
+	storeManager := memory.NewMemManager(memory.WithStoreSize(1000))
+
 	// create pbq manager
 	var pbqManager *pbq.Manager
-	pbqManager, err = pbq.NewManager(ctx, "reduce", pipelineName, 0, memory.NewMemoryStores(memory.WithStoreSize(1000)),
-		pbq.WithReadTimeout(1*time.Second), pbq.WithChannelBufferSize(10))
+	pbqManager, err = pbq.NewManager(ctx, "reduce", pipelineName, 0, storeManager,
+		window.Aligned, pbq.WithReadTimeout(1*time.Second), pbq.WithChannelBufferSize(10))
 	assert.NoError(t, err)
 
 	// create in memory watermark publisher and fetcher
@@ -847,13 +974,14 @@ func TestReduceDataForward_Max(t *testing.T) {
 	}()
 
 	// create a fixed window of 5 minutes
-	window := fixed.NewFixed(5 * time.Minute)
-	idleManager := wmb.NewIdleManager(len(toBuffer))
-	op := pnf.NewOrderedProcessor(ctx, keyedVertex, MaxReduceTest{}, toBuffer, pbqManager, CounterReduceTest{}, publishersMap, idleManager)
+	windower := fixed.NewWindower(5*time.Minute, keyedVertex)
+	idleManager, err := wmb.NewIdleManager(1, len(toBuffer))
+	assert.NoError(t, err)
+	op := pnf.NewProcessAndForward(ctx, keyedVertex, MaxReduceTest{}, toBuffer, pbqManager, CounterReduceTest{}, publishersMap, idleManager, windower)
 
 	var reduceDataForward *DataForward
-	reduceDataForward, err = NewDataForward(ctx, keyedVertex, fromBuffer, toBuffer, pbqManager, CounterReduceTest{}, f, publishersMap,
-		window, idleManager, op, WithReadBatchSize(10))
+	reduceDataForward, err = NewDataForward(ctx, keyedVertex, fromBuffer, toBuffer, pbqManager, storeManager, CounterReduceTest{}, f, publishersMap,
+		windower, idleManager, op, WithReadBatchSize(10))
 	assert.NoError(t, err)
 
 	// start the forwarder
@@ -887,8 +1015,8 @@ func TestReduceDataForward_Max(t *testing.T) {
 
 }
 
-// Max operation with 5 minutes window and two keys
-func TestReduceDataForward_SumWithDifferentKeys(t *testing.T) {
+// Sum operation with 5 minutes fixed window and two keys
+func TestReduceDataForward_FixedSumWithDifferentKeys(t *testing.T) {
 	var (
 		ctx, cancel    = context.WithTimeout(context.Background(), 10*time.Second)
 		fromBufferSize = int64(100000)
@@ -911,10 +1039,13 @@ func TestReduceDataForward_SumWithDifferentKeys(t *testing.T) {
 		toVertexName: {buffer},
 	}
 
+	// create store manager
+	storeManager := memory.NewMemManager(memory.WithStoreSize(1000))
+
 	// create pbq manager
 	var pbqManager *pbq.Manager
-	pbqManager, err = pbq.NewManager(ctx, "reduce", pipelineName, 0, memory.NewMemoryStores(memory.WithStoreSize(1000)),
-		pbq.WithReadTimeout(1*time.Second), pbq.WithChannelBufferSize(10))
+	pbqManager, err = pbq.NewManager(ctx, "reduce", pipelineName, 0, storeManager,
+		window.Aligned, pbq.WithReadTimeout(1*time.Second), pbq.WithChannelBufferSize(10))
 	assert.NoError(t, err)
 
 	// create in memory watermark publisher and fetcher
@@ -928,15 +1059,16 @@ func TestReduceDataForward_SumWithDifferentKeys(t *testing.T) {
 		}
 	}()
 
-	// create a fixed window of 5 minutes
-	window := fixed.NewFixed(5 * time.Minute)
+	// create a fixed windower of 5 minutes
+	windower := fixed.NewWindower(5*time.Minute, keyedVertex)
 
-	idleManager := wmb.NewIdleManager(len(toBuffer))
-	op := pnf.NewOrderedProcessor(ctx, keyedVertex, SumReduceTest{}, toBuffer, pbqManager, CounterReduceTest{}, publishersMap, idleManager)
+	idleManager, err := wmb.NewIdleManager(1, len(toBuffer))
+	assert.NoError(t, err)
+	op := pnf.NewProcessAndForward(ctx, keyedVertex, SumReduceTest{}, toBuffer, pbqManager, CounterReduceTest{}, publishersMap, idleManager, windower)
 
 	var reduceDataForward *DataForward
-	reduceDataForward, err = NewDataForward(ctx, keyedVertex, fromBuffer, toBuffer, pbqManager, CounterReduceTest{}, f, publishersMap,
-		window, idleManager, op, WithReadBatchSize(10))
+	reduceDataForward, err = NewDataForward(ctx, keyedVertex, fromBuffer, toBuffer, pbqManager, storeManager, CounterReduceTest{}, f, publishersMap,
+		windower, idleManager, op, WithReadBatchSize(10))
 
 	assert.NoError(t, err)
 
@@ -990,6 +1122,111 @@ func TestReduceDataForward_SumWithDifferentKeys(t *testing.T) {
 
 }
 
+// Sum operation with 60 seconds session window and two keys
+func TestReduceDataForward_SumWithDifferentKeys(t *testing.T) {
+	var (
+		ctx, cancel    = context.WithTimeout(context.Background(), 10*time.Second)
+		fromBufferSize = int64(100000)
+		toBufferSize   = int64(10)
+		messages       = []int{100, 99}
+		startTime      = 0 // time in millis
+		fromBufferName = "source-reduce-buffer"
+		toVertexName   = "reduce-to-vertex"
+		err            error
+	)
+
+	defer cancel()
+
+	// create from buffers
+	fromBuffer := simplebuffer.NewInMemoryBuffer(fromBufferName, fromBufferSize, 0)
+
+	// create to buffers
+	buffer := simplebuffer.NewInMemoryBuffer(toVertexName, toBufferSize, 0)
+	toBuffer := map[string][]isb.BufferWriter{
+		toVertexName: {buffer},
+	}
+
+	// create store manager
+	storeManager := memory.NewMemManager(memory.WithStoreSize(1000))
+
+	// create pbq manager
+	var pbqManager *pbq.Manager
+	pbqManager, err = pbq.NewManager(ctx, "reduce", pipelineName, 0, storeManager,
+		window.Aligned, pbq.WithReadTimeout(1*time.Second), pbq.WithChannelBufferSize(10))
+	assert.NoError(t, err)
+
+	// create in memory watermark publisher and fetcher
+	f, p := fetcherAndPublisher(ctx, fromBuffer, t.Name())
+	publishersMap, _ := buildPublisherMapAndOTStore(ctx, toBuffer)
+
+	// close the fetcher and publishers
+	defer func() {
+		for _, p := range publishersMap {
+			_ = p.Close()
+		}
+	}()
+
+	// create a session windower with 1 minute timeout
+	windower := session.NewWindower(1*time.Minute, keyedVertex)
+
+	idleManager, err := wmb.NewIdleManager(1, len(toBuffer))
+	assert.NoError(t, err)
+	op := pnf.NewProcessAndForward(ctx, keyedVertex, SessionSumReduceTest{}, toBuffer, pbqManager, CounterReduceTest{}, publishersMap, idleManager, windower)
+
+	var reduceDataForward *DataForward
+	reduceDataForward, err = NewDataForward(ctx, keyedVertex, fromBuffer, toBuffer, pbqManager, storeManager, SessionSumReduceTest{}, f, publishersMap,
+		windower, idleManager, op, WithReadBatchSize(10))
+
+	assert.NoError(t, err)
+
+	// start the producer, publishes messages in different sessions
+	go publishMessagesWithSession(ctx, startTime, messages, 150, 10, p, fromBuffer)
+
+	// start the forwarder
+	go reduceDataForward.Start()
+
+	msgs0, readErr := buffer.Read(ctx, 1)
+	assert.Nil(t, readErr)
+	for len(msgs0) == 0 || msgs0[0].Header.Kind == isb.WMB {
+		select {
+		case <-ctx.Done():
+			assert.Fail(t, ctx.Err().Error())
+			return
+		default:
+			time.Sleep(100 * time.Millisecond)
+			msgs0, readErr = buffer.Read(ctx, 1)
+			assert.Nil(t, readErr)
+		}
+	}
+
+	msgs1, readErr1 := buffer.Read(ctx, 1)
+	assert.Nil(t, readErr1)
+	for len(msgs1) == 0 || msgs1[0].Header.Kind == isb.WMB {
+		select {
+		case <-ctx.Done():
+			assert.Fail(t, ctx.Err().Error())
+			return
+		default:
+			time.Sleep(100 * time.Millisecond)
+			msgs1, readErr1 = buffer.Read(ctx, 1)
+			assert.Nil(t, readErr1)
+		}
+	}
+
+	// assert the output of reduce
+	var readMessagePayload0 PayloadForTest
+	_ = json.Unmarshal(msgs0[0].Payload, &readMessagePayload0)
+	// since the session window timeout is 1 minute, the output should be
+	// 60 * 100(for key even) and 60 * 99(for key odd)
+	assert.Contains(t, []int{6000, 5940}, readMessagePayload0.Value)
+	assert.Contains(t, []string{"even", "odd"}, readMessagePayload0.Key)
+
+	var readMessagePayload1 PayloadForTest
+	_ = json.Unmarshal(msgs1[0].Payload, &readMessagePayload1)
+	assert.Contains(t, []int{6000, 5940}, readMessagePayload1.Value)
+	assert.Contains(t, []string{"even", "odd"}, readMessagePayload1.Key)
+}
+
 // Max operation with 5 minutes window and non keyed
 func TestReduceDataForward_NonKeyed(t *testing.T) {
 	var (
@@ -1014,10 +1251,13 @@ func TestReduceDataForward_NonKeyed(t *testing.T) {
 		toVertexName: {buffer},
 	}
 
+	// create store manager
+	storeManager := memory.NewMemManager(memory.WithStoreSize(1000))
+
 	// create pbq manager
 	var pbqManager *pbq.Manager
-	pbqManager, err = pbq.NewManager(ctx, "reduce", pipelineName, 0, memory.NewMemoryStores(memory.WithStoreSize(1000)),
-		pbq.WithReadTimeout(1*time.Second), pbq.WithChannelBufferSize(10))
+	pbqManager, err = pbq.NewManager(ctx, "reduce", pipelineName, 0, storeManager,
+		window.Aligned, pbq.WithReadTimeout(1*time.Second), pbq.WithChannelBufferSize(10))
 	assert.NoError(t, err)
 
 	// create in memory watermark publisher and fetcher
@@ -1032,14 +1272,15 @@ func TestReduceDataForward_NonKeyed(t *testing.T) {
 	}()
 
 	// create a fixed window of 5 minutes
-	window := fixed.NewFixed(5 * time.Minute)
+	windower := fixed.NewWindower(5*time.Minute, keyedVertex)
 
-	idleManager := wmb.NewIdleManager(len(toBuffer))
-	op := pnf.NewOrderedProcessor(ctx, keyedVertex, SumReduceTest{}, toBuffer, pbqManager, CounterReduceTest{}, publishersMap, idleManager)
+	idleManager, err := wmb.NewIdleManager(1, len(toBuffer))
+	assert.NoError(t, err)
+	op := pnf.NewProcessAndForward(ctx, keyedVertex, SumReduceTest{}, toBuffer, pbqManager, CounterReduceTest{}, publishersMap, idleManager, windower)
 
 	var reduceDataForward *DataForward
-	reduceDataForward, err = NewDataForward(ctx, nonKeyedVertex, fromBuffer, toBuffer, pbqManager, CounterReduceTest{}, f, publishersMap,
-		window, idleManager, op, WithReadBatchSize(10))
+	reduceDataForward, err = NewDataForward(ctx, nonKeyedVertex, fromBuffer, toBuffer, pbqManager, storeManager, CounterReduceTest{}, f, publishersMap,
+		windower, idleManager, op, WithReadBatchSize(10))
 	assert.NoError(t, err)
 
 	// start the forwarder
@@ -1101,13 +1342,13 @@ func TestDataForward_WithContextClose(t *testing.T) {
 		toVertexName: {buffer},
 	}
 
-	// create a store provider
-	storeProvider := memory.NewMemoryStores(memory.WithStoreSize(1000))
+	// create store manager
+	storeManager := memory.NewMemManager(memory.WithStoreSize(100))
 
 	// create pbq manager
 	var pbqManager *pbq.Manager
-	pbqManager, err = pbq.NewManager(cctx, "reduce", pipelineName, 0, storeProvider,
-		pbq.WithReadTimeout(1*time.Second), pbq.WithChannelBufferSize(10))
+	pbqManager, err = pbq.NewManager(cctx, "reduce", pipelineName, 0, storeManager,
+		window.Aligned, pbq.WithReadTimeout(1*time.Second), pbq.WithChannelBufferSize(10))
 	assert.NoError(t, err)
 
 	// create in memory watermark publisher and fetcher
@@ -1121,15 +1362,16 @@ func TestDataForward_WithContextClose(t *testing.T) {
 		}
 	}()
 
-	// create a fixed window of 5 minutes
-	window := fixed.NewFixed(5 * time.Minute)
+	// create a fixed windower of 5 minutes
+	windower := fixed.NewWindower(5*time.Minute, keyedVertex)
 
-	idleManager := wmb.NewIdleManager(len(toBuffer))
-	op := pnf.NewOrderedProcessor(ctx, keyedVertex, SumReduceTest{}, toBuffer, pbqManager, CounterReduceTest{}, publishersMap, idleManager)
+	idleManager, err := wmb.NewIdleManager(1, len(toBuffer))
+	assert.NoError(t, err)
+	op := pnf.NewProcessAndForward(ctx, keyedVertex, SumReduceTest{}, toBuffer, pbqManager, CounterReduceTest{}, publishersMap, idleManager, windower)
 
 	var reduceDataForward *DataForward
-	reduceDataForward, err = NewDataForward(cctx, keyedVertex, fromBuffer, toBuffer, pbqManager, CounterReduceTest{}, f, publishersMap,
-		window, idleManager, op, WithReadBatchSize(1))
+	reduceDataForward, err = NewDataForward(cctx, keyedVertex, fromBuffer, toBuffer, pbqManager, storeManager, CounterReduceTest{}, f, publishersMap,
+		windower, idleManager, op, WithReadBatchSize(1))
 	assert.NoError(t, err)
 
 	// start the forwarder
@@ -1152,11 +1394,11 @@ func TestDataForward_WithContextClose(t *testing.T) {
 		}
 	}
 
-	var discoveredPartitions []partition.ID
+	var discoveredStores []wal.WAL
 	for {
-		discoveredPartitions, _ = storeProvider.DiscoverPartitions(ctx)
+		discoveredStores, _ = storeManager.DiscoverWALs(ctx)
 
-		if len(discoveredPartitions) == 1 {
+		if len(discoveredStores) == 1 {
 			break
 		}
 		select {
@@ -1169,7 +1411,7 @@ func TestDataForward_WithContextClose(t *testing.T) {
 	}
 
 	// even though we have 2 different keys
-	assert.Len(t, discoveredPartitions, 1)
+	assert.Len(t, discoveredStores, 1)
 
 }
 
@@ -1198,10 +1440,13 @@ func TestReduceDataForward_SumMultiPartitions(t *testing.T) {
 		toVertexName: {buffer1, buffer2},
 	}
 
+	// create store manager
+	storeManager := memory.NewMemManager(memory.WithStoreSize(1000))
+
 	// create pbq manager
 	var pbqManager *pbq.Manager
-	pbqManager, err = pbq.NewManager(ctx, "reduce", pipelineName, 0, memory.NewMemoryStores(memory.WithStoreSize(1000)),
-		pbq.WithReadTimeout(1*time.Second), pbq.WithChannelBufferSize(10))
+	pbqManager, err = pbq.NewManager(ctx, "reduce", pipelineName, 0, storeManager,
+		window.Aligned, pbq.WithReadTimeout(1*time.Second), pbq.WithChannelBufferSize(10))
 	assert.NoError(t, err)
 
 	// create in memory watermark publisher and fetcher
@@ -1215,15 +1460,16 @@ func TestReduceDataForward_SumMultiPartitions(t *testing.T) {
 		}
 	}()
 
-	// create a fixed window of 5 minutes
-	window := fixed.NewFixed(5 * time.Minute)
+	// create a fixed windower of 5 minutes
+	windower := fixed.NewWindower(5*time.Minute, keyedVertex)
 
-	idleManager := wmb.NewIdleManager(len(toBuffer))
-	op := pnf.NewOrderedProcessor(ctx, keyedVertex, SumReduceTest{}, toBuffer, pbqManager, &myForwardTestRoundRobin{}, publishersMap, idleManager)
+	idleManager, err := wmb.NewIdleManager(1, len(toBuffer))
+	assert.NoError(t, err)
+	op := pnf.NewProcessAndForward(ctx, keyedVertex, SumReduceTest{}, toBuffer, pbqManager, &myForwardTestRoundRobin{}, publishersMap, idleManager, windower)
 
 	var reduceDataForward *DataForward
-	reduceDataForward, err = NewDataForward(ctx, keyedVertex, fromBuffer, toBuffer, pbqManager, &myForwardTestRoundRobin{}, f, publishersMap,
-		window, idleManager, op, WithReadBatchSize(10))
+	reduceDataForward, err = NewDataForward(ctx, keyedVertex, fromBuffer, toBuffer, pbqManager, storeManager, &myForwardTestRoundRobin{}, f, publishersMap,
+		windower, idleManager, op, WithReadBatchSize(10))
 
 	assert.NoError(t, err)
 
@@ -1313,6 +1559,13 @@ func fetcherAndPublisher(ctx context.Context, fromBuffer *simplebuffer.InMemoryB
 						GroupBy: &dfv1.GroupBy{},
 					},
 				},
+				FromEdges: []dfv1.CombinedEdge{
+					{
+						Edge: dfv1.Edge{
+							From: "fromVertex",
+						},
+					},
+				},
 			},
 		},
 	}, map[string]wmstore.WatermarkStore{"fromVertex": store}, fetch.WithIsReduce(true))
@@ -1338,11 +1591,11 @@ func buildPublisherMapAndOTStore(ctx context.Context, toBuffers map[string][]isb
 	index := int32(0)
 	for key, partitionedBuffers := range toBuffers {
 		publishEntity := entity.NewProcessorEntity(key)
-		store, _ := wmstore.BuildInmemWatermarkStore(ctx, key)
-		hbWatcherCh, _ := store.HeartbeatStore().Watch(ctx)
-		otWatcherCh, _ := store.OffsetTimelineStore().Watch(ctx)
-		otStores[key] = store.OffsetTimelineStore()
-		p := publish.NewPublish(ctx, publishEntity, store, int32(len(partitionedBuffers)), publish.WithAutoRefreshHeartbeatDisabled(), publish.WithPodHeartbeatRate(1))
+		wmStore, _ := wmstore.BuildInmemWatermarkStore(ctx, key)
+		hbWatcherCh := wmStore.HeartbeatStore().Watch(ctx)
+		otWatcherCh := wmStore.OffsetTimelineStore().Watch(ctx)
+		otStores[key] = wmStore.OffsetTimelineStore()
+		p := publish.NewPublish(ctx, publishEntity, wmStore, int32(len(partitionedBuffers)), publish.WithAutoRefreshHeartbeatDisabled(), publish.WithPodHeartbeatRate(1))
 		publishers[key] = p
 
 		go func() {
@@ -1413,6 +1666,54 @@ func publishMessages(ctx context.Context, startTime int, messages []int, testDur
 	go func() {
 		for i := 0; i < testDuration; i++ {
 			inputChan <- eventTime + (i * 1000)
+		}
+		close(inputChan)
+	}()
+
+	inputMsgs := make([]isb.Message, batchSize)
+	count := 0
+
+	for {
+		select {
+		case et, ok := <-inputChan:
+			if !ok {
+				return
+			}
+
+			for _, message := range messages {
+				inputMsg := buildIsbMessage(message, time.UnixMilli(int64(et)))
+				inputMsgs[count] = inputMsg
+				count += 1
+
+				if count >= batchSize {
+					offsets, _ := fromBuffer.Write(ctx, inputMsgs)
+					if len(offsets) > 0 {
+						publish.PublishWatermark(wmb.Watermark(time.UnixMilli(int64(et))), offsets[len(offsets)-1], 0)
+					}
+					count = 0
+				}
+			}
+		case <-ctx.Done():
+			return
+		}
+	}
+}
+
+func publishMessagesWithSession(ctx context.Context, startTime int, messages []int, testDuration int, batchSize int, publish publish.Publisher, fromBuffer *simplebuffer.InMemoryBuffer) {
+	eventTime := startTime
+
+	inputChan := make(chan int)
+
+	go func() {
+		count := 0
+		for i := 0; i < testDuration; i++ {
+			if count == 60 {
+				eventTime = eventTime + 70*1000
+			} else {
+				eventTime = eventTime + 1000
+			}
+			inputChan <- eventTime
+			count += 1
 		}
 		close(inputChan)
 	}()

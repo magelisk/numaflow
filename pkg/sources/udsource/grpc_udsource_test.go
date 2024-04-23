@@ -36,8 +36,7 @@ import (
 	"google.golang.org/protobuf/types/known/timestamppb"
 
 	"github.com/numaproj/numaflow/pkg/isb"
-	sourceclient "github.com/numaproj/numaflow/pkg/sdkclient/source/client"
-	"github.com/numaproj/numaflow/pkg/sources/udsource/utils"
+	sourceclient "github.com/numaproj/numaflow/pkg/sdkclient/source"
 )
 
 func TestMain(m *testing.M) {
@@ -62,7 +61,12 @@ func (r *rpcMsg) String() string {
 
 func NewMockUDSgRPCBasedUDSource(mockClient *sourcemock.MockSourceClient) *GRPCBasedUDSource {
 	c, _ := sourceclient.NewFromClient(mockClient)
-	return &GRPCBasedUDSource{c}
+	return &GRPCBasedUDSource{
+		vertexName:         "testVertex",
+		pipelineName:       "testPipeline",
+		vertexReplicaIndex: 0,
+		client:             c,
+	}
 }
 
 func Test_gRPCBasedUDSource_WaitUntilReadyWithMockClient(t *testing.T) {
@@ -187,11 +191,13 @@ func Test_gRPCBasedUDSource_ApplyReadWithMockClient(t *testing.T) {
 			},
 		}
 
+		offset := &sourcepb.Offset{Offset: []byte(`test_offset`), PartitionId: 0}
+
 		var TestEventTime = time.Unix(1661169600, 0).UTC()
 		expectedResponse := &sourcepb.ReadResponse{
 			Result: &sourcepb.ReadResponse_Result{
 				Payload:   []byte(`test_payload`),
-				Offset:    &sourcepb.Offset{Offset: []byte(`test_offset`), PartitionId: 0},
+				Offset:    offset,
 				EventTime: timestamppb.New(TestEventTime),
 				Keys:      []string{"test_key"},
 			},
@@ -216,7 +222,7 @@ func Test_gRPCBasedUDSource_ApplyReadWithMockClient(t *testing.T) {
 		assert.Equal(t, 1, len(readMessages))
 		assert.Equal(t, []byte(`test_payload`), readMessages[0].Body.Payload)
 		assert.Equal(t, []string{"test_key"}, readMessages[0].Keys)
-		assert.Equal(t, utils.NewSimpleSourceOffset("test_offset", 0), readMessages[0].ReadOffset)
+		assert.Equal(t, NewUserDefinedSourceOffset(offset), readMessages[0].ReadOffset)
 		assert.Equal(t, TestEventTime, readMessages[0].EventTime)
 	})
 
@@ -268,11 +274,15 @@ func Test_gRPCBasedUDSource_ApplyAckWithMockClient(t *testing.T) {
 		ctrl := gomock.NewController(t)
 		defer ctrl.Finish()
 
+		offset1 := &sourcepb.Offset{Offset: []byte("test-offset-1"), PartitionId: 0}
+		offset2 := &sourcepb.Offset{Offset: []byte("test-offset-2"), PartitionId: 0}
+
 		mockClient := sourcemock.NewMockSourceClient(ctrl)
 		req := &sourcepb.AckRequest{
 			Request: &sourcepb.AckRequest_Request{
 				Offsets: []*sourcepb.Offset{
-					{Offset: []byte("test-offset-1"), PartitionId: 0}, {Offset: []byte("test-offset-2"), PartitionId: 0},
+					offset1,
+					offset2,
 				},
 			},
 		}
@@ -290,8 +300,8 @@ func Test_gRPCBasedUDSource_ApplyAckWithMockClient(t *testing.T) {
 
 		u := NewMockUDSgRPCBasedUDSource(mockClient)
 		err := u.ApplyAckFn(ctx, []isb.Offset{
-			utils.NewSimpleSourceOffset("test-offset-1", 0),
-			utils.NewSimpleSourceOffset("test-offset-2", 0),
+			NewUserDefinedSourceOffset(offset1),
+			NewUserDefinedSourceOffset(offset2),
 		})
 		assert.NoError(t, err)
 	})
@@ -300,11 +310,15 @@ func Test_gRPCBasedUDSource_ApplyAckWithMockClient(t *testing.T) {
 		ctrl := gomock.NewController(t)
 		defer ctrl.Finish()
 
+		offset1 := &sourcepb.Offset{Offset: []byte("test-offset-1"), PartitionId: 0}
+		offset2 := &sourcepb.Offset{Offset: []byte("test-offset-2"), PartitionId: 0}
+
 		mockClient := sourcemock.NewMockSourceClient(ctrl)
 		req := &sourcepb.AckRequest{
 			Request: &sourcepb.AckRequest_Request{
 				Offsets: []*sourcepb.Offset{
-					{Offset: []byte("test-offset-1"), PartitionId: 0}, {Offset: []byte("test-offset-2"), PartitionId: 0},
+					offset1,
+					offset2,
 				},
 			},
 		}
@@ -321,8 +335,8 @@ func Test_gRPCBasedUDSource_ApplyAckWithMockClient(t *testing.T) {
 
 		u := NewMockUDSgRPCBasedUDSource(mockClient)
 		err := u.ApplyAckFn(ctx, []isb.Offset{
-			utils.NewSimpleSourceOffset("test-offset-1", 0),
-			utils.NewSimpleSourceOffset("test-offset-2", 0),
+			NewUserDefinedSourceOffset(offset1),
+			NewUserDefinedSourceOffset(offset2),
 		})
 		assert.ErrorIs(t, err, status.New(codes.DeadlineExceeded, "mock test err").Err())
 	})

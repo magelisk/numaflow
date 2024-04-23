@@ -71,6 +71,7 @@ func GetOpenAPIDefinitions(ref common.ReferenceCallback) map[string]common.OpenA
 		"github.com/numaproj/numaflow/pkg/apis/numaflow/v1alpha1.NativeRedis":                    schema_pkg_apis_numaflow_v1alpha1_NativeRedis(ref),
 		"github.com/numaproj/numaflow/pkg/apis/numaflow/v1alpha1.NatsAuth":                       schema_pkg_apis_numaflow_v1alpha1_NatsAuth(ref),
 		"github.com/numaproj/numaflow/pkg/apis/numaflow/v1alpha1.NatsSource":                     schema_pkg_apis_numaflow_v1alpha1_NatsSource(ref),
+		"github.com/numaproj/numaflow/pkg/apis/numaflow/v1alpha1.NoStore":                        schema_pkg_apis_numaflow_v1alpha1_NoStore(ref),
 		"github.com/numaproj/numaflow/pkg/apis/numaflow/v1alpha1.PBQStorage":                     schema_pkg_apis_numaflow_v1alpha1_PBQStorage(ref),
 		"github.com/numaproj/numaflow/pkg/apis/numaflow/v1alpha1.PersistenceStrategy":            schema_pkg_apis_numaflow_v1alpha1_PersistenceStrategy(ref),
 		"github.com/numaproj/numaflow/pkg/apis/numaflow/v1alpha1.Pipeline":                       schema_pkg_apis_numaflow_v1alpha1_Pipeline(ref),
@@ -84,6 +85,7 @@ func GetOpenAPIDefinitions(ref common.ReferenceCallback) map[string]common.OpenA
 		"github.com/numaproj/numaflow/pkg/apis/numaflow/v1alpha1.SASL":                           schema_pkg_apis_numaflow_v1alpha1_SASL(ref),
 		"github.com/numaproj/numaflow/pkg/apis/numaflow/v1alpha1.SASLPlain":                      schema_pkg_apis_numaflow_v1alpha1_SASLPlain(ref),
 		"github.com/numaproj/numaflow/pkg/apis/numaflow/v1alpha1.Scale":                          schema_pkg_apis_numaflow_v1alpha1_Scale(ref),
+		"github.com/numaproj/numaflow/pkg/apis/numaflow/v1alpha1.SessionWindow":                  schema_pkg_apis_numaflow_v1alpha1_SessionWindow(ref),
 		"github.com/numaproj/numaflow/pkg/apis/numaflow/v1alpha1.SideInput":                      schema_pkg_apis_numaflow_v1alpha1_SideInput(ref),
 		"github.com/numaproj/numaflow/pkg/apis/numaflow/v1alpha1.SideInputTrigger":               schema_pkg_apis_numaflow_v1alpha1_SideInputTrigger(ref),
 		"github.com/numaproj/numaflow/pkg/apis/numaflow/v1alpha1.SideInputsManagerTemplate":      schema_pkg_apis_numaflow_v1alpha1_SideInputsManagerTemplate(ref),
@@ -1024,7 +1026,15 @@ func schema_pkg_apis_numaflow_v1alpha1_FixedWindow(ref common.ReferenceCallback)
 				Properties: map[string]spec.Schema{
 					"length": {
 						SchemaProps: spec.SchemaProps{
-							Ref: ref("k8s.io/apimachinery/pkg/apis/meta/v1.Duration"),
+							Description: "Length is the duration of the fixed window.",
+							Ref:         ref("k8s.io/apimachinery/pkg/apis/meta/v1.Duration"),
+						},
+					},
+					"streaming": {
+						SchemaProps: spec.SchemaProps{
+							Description: "Streaming should be set to true if the reduce udf is streaming.",
+							Type:        []string{"boolean"},
+							Format:      "",
 						},
 					},
 				},
@@ -1134,9 +1144,10 @@ func schema_pkg_apis_numaflow_v1alpha1_GSSAPI(ref common.ReferenceCallback) comm
 					},
 					"authType": {
 						SchemaProps: spec.SchemaProps{
-							Description: "valid inputs - KRB5_USER_AUTH, KRB5_KEYTAB_AUTH",
+							Description: "valid inputs - KRB5_USER_AUTH, KRB5_KEYTAB_AUTH\n\nPossible enum values:\n - `\"KRB5_KEYTAB_AUTH\"` represents the password method KRB5KeytabAuth = \"KRB5_KEYTAB_AUTH\" = 2\n - `\"KRB5_USER_AUTH\"` represents the password method KRB5UserAuth = \"KRB5_USER_AUTH\" = 1",
 							Type:        []string{"string"},
 							Format:      "",
+							Enum:        []interface{}{"KRB5_KEYTAB_AUTH", "KRB5_USER_AUTH"},
 						},
 					},
 					"passwordSecret": {
@@ -1202,6 +1213,12 @@ func schema_pkg_apis_numaflow_v1alpha1_GeneratorSource(ref common.ReferenceCallb
 							Description: "Value is an optional uint64 value to be written in to the payload",
 							Type:        []string{"integer"},
 							Format:      "int64",
+						},
+					},
+					"jitter": {
+						SchemaProps: spec.SchemaProps{
+							Description: "Jitter is the jitter for the message generation, used to simulate out of order messages for example if the jitter is 10s, then the message's event time will be delayed by a random time between 0 and 10s which will result in the message being out of order by 0 to 10s",
+							Ref:         ref("k8s.io/apimachinery/pkg/apis/meta/v1.Duration"),
 						},
 					},
 				},
@@ -2889,6 +2906,17 @@ func schema_pkg_apis_numaflow_v1alpha1_NatsSource(ref common.ReferenceCallback) 
 	}
 }
 
+func schema_pkg_apis_numaflow_v1alpha1_NoStore(ref common.ReferenceCallback) common.OpenAPIDefinition {
+	return common.OpenAPIDefinition{
+		Schema: spec.Schema{
+			SchemaProps: spec.SchemaProps{
+				Description: "NoStore means there will be no persistence storage and there will be data loss during pod restarts. Use this option only if you do not care about correctness (e.g., approx statistics pipeline like sampling rate, etc.).",
+				Type:        []string{"object"},
+			},
+		},
+	}
+}
+
 func schema_pkg_apis_numaflow_v1alpha1_PBQStorage(ref common.ReferenceCallback) common.OpenAPIDefinition {
 	return common.OpenAPIDefinition{
 		Schema: spec.Schema{
@@ -2906,11 +2934,16 @@ func schema_pkg_apis_numaflow_v1alpha1_PBQStorage(ref common.ReferenceCallback) 
 							Ref: ref("k8s.io/api/core/v1.EmptyDirVolumeSource"),
 						},
 					},
+					"no_store": {
+						SchemaProps: spec.SchemaProps{
+							Ref: ref("github.com/numaproj/numaflow/pkg/apis/numaflow/v1alpha1.NoStore"),
+						},
+					},
 				},
 			},
 		},
 		Dependencies: []string{
-			"github.com/numaproj/numaflow/pkg/apis/numaflow/v1alpha1.PersistenceStrategy", "k8s.io/api/core/v1.EmptyDirVolumeSource"},
+			"github.com/numaproj/numaflow/pkg/apis/numaflow/v1alpha1.NoStore", "github.com/numaproj/numaflow/pkg/apis/numaflow/v1alpha1.PersistenceStrategy", "k8s.io/api/core/v1.EmptyDirVolumeSource"},
 	}
 }
 
@@ -3218,8 +3251,7 @@ func schema_pkg_apis_numaflow_v1alpha1_PipelineStatus(ref common.ReferenceCallba
 					},
 					"lastUpdated": {
 						SchemaProps: spec.SchemaProps{
-							Default: map[string]interface{}{},
-							Ref:     ref("k8s.io/apimachinery/pkg/apis/meta/v1.Time"),
+							Ref: ref("k8s.io/apimachinery/pkg/apis/meta/v1.Time"),
 						},
 					},
 					"vertexCount": {
@@ -3544,6 +3576,27 @@ func schema_pkg_apis_numaflow_v1alpha1_Scale(ref common.ReferenceCallback) commo
 	}
 }
 
+func schema_pkg_apis_numaflow_v1alpha1_SessionWindow(ref common.ReferenceCallback) common.OpenAPIDefinition {
+	return common.OpenAPIDefinition{
+		Schema: spec.Schema{
+			SchemaProps: spec.SchemaProps{
+				Description: "SessionWindow describes a session window",
+				Type:        []string{"object"},
+				Properties: map[string]spec.Schema{
+					"timeout": {
+						SchemaProps: spec.SchemaProps{
+							Description: "Timeout is the duration of inactivity after which a session window closes.",
+							Ref:         ref("k8s.io/apimachinery/pkg/apis/meta/v1.Duration"),
+						},
+					},
+				},
+			},
+		},
+		Dependencies: []string{
+			"k8s.io/apimachinery/pkg/apis/meta/v1.Duration"},
+	}
+}
+
 func schema_pkg_apis_numaflow_v1alpha1_SideInput(ref common.ReferenceCallback) common.OpenAPIDefinition {
 	return common.OpenAPIDefinition{
 		Schema: spec.Schema{
@@ -3808,12 +3861,21 @@ func schema_pkg_apis_numaflow_v1alpha1_SlidingWindow(ref common.ReferenceCallbac
 				Properties: map[string]spec.Schema{
 					"length": {
 						SchemaProps: spec.SchemaProps{
-							Ref: ref("k8s.io/apimachinery/pkg/apis/meta/v1.Duration"),
+							Description: "Length is the duration of the sliding window.",
+							Ref:         ref("k8s.io/apimachinery/pkg/apis/meta/v1.Duration"),
 						},
 					},
 					"slide": {
 						SchemaProps: spec.SchemaProps{
-							Ref: ref("k8s.io/apimachinery/pkg/apis/meta/v1.Duration"),
+							Description: "Slide is the slide parameter that controls the frequency at which the sliding window is created.",
+							Ref:         ref("k8s.io/apimachinery/pkg/apis/meta/v1.Duration"),
+						},
+					},
+					"streaming": {
+						SchemaProps: spec.SchemaProps{
+							Description: "Streaming should be set to true if the reduce udf is streaming.",
+							Type:        []string{"boolean"},
+							Format:      "",
 						},
 					},
 				},
@@ -4671,8 +4733,7 @@ func schema_pkg_apis_numaflow_v1alpha1_VertexStatus(ref common.ReferenceCallback
 					},
 					"lastScaledAt": {
 						SchemaProps: spec.SchemaProps{
-							Default: map[string]interface{}{},
-							Ref:     ref("k8s.io/apimachinery/pkg/apis/meta/v1.Time"),
+							Ref: ref("k8s.io/apimachinery/pkg/apis/meta/v1.Time"),
 						},
 					},
 				},
@@ -4876,11 +4937,16 @@ func schema_pkg_apis_numaflow_v1alpha1_Window(ref common.ReferenceCallback) comm
 							Ref: ref("github.com/numaproj/numaflow/pkg/apis/numaflow/v1alpha1.SlidingWindow"),
 						},
 					},
+					"session": {
+						SchemaProps: spec.SchemaProps{
+							Ref: ref("github.com/numaproj/numaflow/pkg/apis/numaflow/v1alpha1.SessionWindow"),
+						},
+					},
 				},
 			},
 		},
 		Dependencies: []string{
-			"github.com/numaproj/numaflow/pkg/apis/numaflow/v1alpha1.FixedWindow", "github.com/numaproj/numaflow/pkg/apis/numaflow/v1alpha1.SlidingWindow"},
+			"github.com/numaproj/numaflow/pkg/apis/numaflow/v1alpha1.FixedWindow", "github.com/numaproj/numaflow/pkg/apis/numaflow/v1alpha1.SessionWindow", "github.com/numaproj/numaflow/pkg/apis/numaflow/v1alpha1.SlidingWindow"},
 	}
 }
 
@@ -5008,6 +5074,32 @@ func schema_pkg_apis_numaflow_v1alpha1_containerBuilder(ref common.ReferenceCall
 							Ref:         ref("k8s.io/api/core/v1.ResourceRequirements"),
 						},
 					},
+					"resizePolicy": {
+						VendorExtensible: spec.VendorExtensible{
+							Extensions: spec.Extensions{
+								"x-kubernetes-list-type": "atomic",
+							},
+						},
+						SchemaProps: spec.SchemaProps{
+							Description: "Resources resize policy for the container.",
+							Type:        []string{"array"},
+							Items: &spec.SchemaOrArray{
+								Schema: &spec.Schema{
+									SchemaProps: spec.SchemaProps{
+										Default: map[string]interface{}{},
+										Ref:     ref("k8s.io/api/core/v1.ContainerResizePolicy"),
+									},
+								},
+							},
+						},
+					},
+					"restartPolicy": {
+						SchemaProps: spec.SchemaProps{
+							Description: "RestartPolicy defines the restart behavior of individual containers in a pod. This field may only be set for init containers, and the only allowed value is \"Always\". For non-init containers or when this field is not specified, the restart behavior is defined by the Pod's restart policy and the container type. Setting the RestartPolicy as \"Always\" for the init container will have the following effect: this init container will be continually restarted on exit until all regular containers have terminated. Once all regular containers have completed, all init containers with restartPolicy \"Always\" will be shut down. This lifecycle differs from normal init containers and is often referred to as a \"sidecar\" container. Although this init container still starts in the init container sequence, it does not wait for the container to complete before proceeding to the next init container. Instead, the next init container starts immediately after this init container is started, or after any startupProbe has successfully completed.",
+							Type:        []string{"string"},
+							Format:      "",
+						},
+					},
 					"volumeMounts": {
 						VendorExtensible: spec.VendorExtensible{
 							Extensions: spec.Extensions{
@@ -5125,7 +5217,7 @@ func schema_pkg_apis_numaflow_v1alpha1_containerBuilder(ref common.ReferenceCall
 			},
 		},
 		Dependencies: []string{
-			"k8s.io/api/core/v1.ContainerPort", "k8s.io/api/core/v1.EnvFromSource", "k8s.io/api/core/v1.EnvVar", "k8s.io/api/core/v1.Lifecycle", "k8s.io/api/core/v1.Probe", "k8s.io/api/core/v1.ResourceRequirements", "k8s.io/api/core/v1.SecurityContext", "k8s.io/api/core/v1.VolumeDevice", "k8s.io/api/core/v1.VolumeMount"},
+			"k8s.io/api/core/v1.ContainerPort", "k8s.io/api/core/v1.ContainerResizePolicy", "k8s.io/api/core/v1.EnvFromSource", "k8s.io/api/core/v1.EnvVar", "k8s.io/api/core/v1.Lifecycle", "k8s.io/api/core/v1.Probe", "k8s.io/api/core/v1.ResourceRequirements", "k8s.io/api/core/v1.SecurityContext", "k8s.io/api/core/v1.VolumeDevice", "k8s.io/api/core/v1.VolumeMount"},
 	}
 }
 

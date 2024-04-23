@@ -21,10 +21,10 @@ import (
 	"time"
 
 	corev1 "k8s.io/api/core/v1"
+	"k8s.io/utils/ptr"
 
 	"github.com/stretchr/testify/assert"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
-	"k8s.io/utils/pointer"
 
 	dfv1 "github.com/numaproj/numaflow/pkg/apis/numaflow/v1alpha1"
 )
@@ -103,7 +103,7 @@ var (
 				},
 				{
 					Name:       "p2",
-					Partitions: pointer.Int32(2),
+					Partitions: ptr.To[int32](2),
 					UDF: &dfv1.UDF{
 						Container: &dfv1.Container{
 							Image: "my-image",
@@ -151,6 +151,30 @@ var (
 					},
 				},
 				{
+					Name: "p4",
+					UDF: &dfv1.UDF{
+						Container: &dfv1.Container{
+							Image: "my-image",
+						},
+						GroupBy: &dfv1.GroupBy{
+							Window: dfv1.Window{
+								Session: &dfv1.SessionWindow{
+									Timeout: &metav1.Duration{
+										Duration: time.Duration(10 * time.Second),
+									},
+								},
+							},
+							Storage: &dfv1.PBQStorage{
+								PersistentVolumeClaim: &dfv1.PersistenceStrategy{
+									StorageClassName: nil,
+									AccessMode:       &dfv1.DefaultAccessMode,
+									VolumeSize:       &dfv1.DefaultVolumeSize,
+								},
+							},
+						},
+					},
+				},
+				{
 					Name: "output",
 					Sink: &dfv1.Sink{},
 				},
@@ -159,7 +183,8 @@ var (
 				{From: "input", To: "p1"},
 				{From: "p1", To: "p2"},
 				{From: "p2", To: "p3"},
-				{From: "p3", To: "output"},
+				{From: "p3", To: "p4"},
+				{From: "p4", To: "output"},
 			},
 		},
 	}
@@ -523,12 +548,12 @@ func TestValidateReducePipeline(t *testing.T) {
 
 	t.Run("test partitions", func(t *testing.T) {
 		testObj := testReducePipeline.DeepCopy()
-		testObj.Spec.Vertices[0].Partitions = pointer.Int32(2)
+		testObj.Spec.Vertices[0].Partitions = ptr.To[int32](2)
 		err := ValidatePipeline(testObj)
 		assert.Error(t, err)
 		assert.Contains(t, err.Error(), `partitions should not > 1 for source vertices`)
 		testObj.Spec.Vertices[0].Partitions = nil
-		testObj.Spec.Vertices[1].Partitions = pointer.Int32(2)
+		testObj.Spec.Vertices[1].Partitions = ptr.To[int32](2)
 		err = ValidatePipeline(testObj)
 		assert.Error(t, err)
 		assert.Contains(t, err.Error(), `partitions should not > 1 for non-keyed reduce vertices`)
@@ -580,8 +605,8 @@ func TestValidateVertex(t *testing.T) {
 		v := dfv1.AbstractVertex{
 			Name: "my-vertex",
 			Scale: dfv1.Scale{
-				Min: pointer.Int32(-1),
-				Max: pointer.Int32(1),
+				Min: ptr.To[int32](-1),
+				Max: ptr.To[int32](1),
 			},
 		}
 		err := validateVertex(v)
@@ -593,8 +618,8 @@ func TestValidateVertex(t *testing.T) {
 		v := dfv1.AbstractVertex{
 			Name: "my-vertex",
 			Scale: dfv1.Scale{
-				Min: pointer.Int32(2),
-				Max: pointer.Int32(1),
+				Min: ptr.To[int32](2),
+				Max: ptr.To[int32](1),
 			},
 		}
 		err := validateVertex(v)
@@ -606,7 +631,7 @@ func TestValidateVertex(t *testing.T) {
 		v := dfv1.AbstractVertex{
 			Name: "my-vertex",
 			Scale: dfv1.Scale{
-				Max: pointer.Int32(0),
+				Max: ptr.To[int32](0),
 			},
 		}
 		err := validateVertex(v)
@@ -677,6 +702,19 @@ func TestValidateUDF(t *testing.T) {
 		err := validateUDF(udf)
 		assert.Error(t, err)
 		assert.Contains(t, err.Error(), `"length" is missing`)
+	})
+
+	t.Run("bad session timeout", func(t *testing.T) {
+		udf := dfv1.UDF{
+			GroupBy: &dfv1.GroupBy{
+				Window: dfv1.Window{
+					Session: &dfv1.SessionWindow{},
+				},
+			},
+		}
+		err := validateUDF(udf)
+		assert.Error(t, err)
+		assert.Contains(t, err.Error(), `"timeout" is missing`)
 	})
 }
 

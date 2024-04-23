@@ -31,8 +31,9 @@ import (
 	"github.com/numaproj/numaflow/pkg/isbsvc"
 	"github.com/numaproj/numaflow/pkg/metrics"
 	"github.com/numaproj/numaflow/pkg/sdkclient"
-	sourceclient "github.com/numaproj/numaflow/pkg/sdkclient/source/client"
+	sourceclient "github.com/numaproj/numaflow/pkg/sdkclient/source"
 	"github.com/numaproj/numaflow/pkg/sdkclient/sourcetransformer"
+	"github.com/numaproj/numaflow/pkg/sdkserverinfo"
 	jsclient "github.com/numaproj/numaflow/pkg/shared/clients/nats"
 	redisclient "github.com/numaproj/numaflow/pkg/shared/clients/redis"
 	"github.com/numaproj/numaflow/pkg/shared/logging"
@@ -74,13 +75,6 @@ func (sp *SourceProcessor) Start(ctx context.Context) error {
 	ctx, cancel := context.WithCancel(ctx)
 	defer cancel()
 
-	// create a new NATS client pool
-	natsClientPool, err := jsclient.NewClientPool(ctx, jsclient.WithClientPoolSize(2))
-	if err != nil {
-		return fmt.Errorf("failed to create a new NATS client pool: %w", err)
-	}
-	defer natsClientPool.CloseAll()
-
 	// watermark variables no-op initialization
 	// create a no op fetcher
 	fetchWatermark, _ := generic.BuildNoOpSourceWatermarkProgressors(sp.VertexInstance.Vertex.GetToBuffers())
@@ -114,6 +108,14 @@ func (sp *SourceProcessor) Start(ctx context.Context) error {
 			writersMap[e.To] = bufferWriters
 		}
 	case dfv1.ISBSvcTypeJetStream:
+
+		// create a new NATS client pool
+		natsClientPool, err := jsclient.NewClientPool(ctx, jsclient.WithClientPoolSize(2))
+		if err != nil {
+			return fmt.Errorf("failed to create a new NATS client pool: %w", err)
+		}
+		defer natsClientPool.CloseAll()
+
 		for _, e := range sp.VertexInstance.Vertex.Spec.ToEdges {
 			writeOpts := []jetstreamisb.WriteOption{
 				jetstreamisb.WithBufferFullWritingStrategy(e.BufferFullWritingStrategy()),
@@ -162,7 +164,7 @@ func (sp *SourceProcessor) Start(ctx context.Context) error {
 			if err != nil {
 				return err
 			}
-			idleManager = wmb.NewIdleManager(len(writersMap))
+			idleManager, _ = wmb.NewIdleManager(1, len(writersMap))
 		}
 	default:
 		return fmt.Errorf("unrecognized isb svc type %q", sp.ISBSvcType)
@@ -173,7 +175,7 @@ func (sp *SourceProcessor) Start(ctx context.Context) error {
 	var toVertexPartitionMap = make(map[string]int)
 	shuffleFuncMap := make(map[string]*shuffle.Shuffle)
 	for _, edge := range sp.VertexInstance.Vertex.Spec.ToEdges {
-		if edge.ToVertexType == dfv1.VertexTypeReduceUDF && edge.GetToVertexPartitionCount() > 1 {
+		if edge.GetToVertexPartitionCount() > 1 {
 			s := shuffle.NewShuffle(edge.To, edge.GetToVertexPartitionCount())
 			shuffleFuncMap[fmt.Sprintf("%s:%s", edge.From, edge.To)] = s
 		}
@@ -183,12 +185,18 @@ func (sp *SourceProcessor) Start(ctx context.Context) error {
 	// if the source is a user-defined source, we create a gRPC client for it.
 	var udsGRPCClient *udsource.GRPCBasedUDSource
 	if sp.VertexInstance.Vertex.IsUDSource() {
-		srcClient, err := sourceclient.New()
+		// Wait for server info to be ready
+		serverInfo, err := sdkserverinfo.SDKServerInfo(sdkserverinfo.WithServerInfoFilePath(sdkserverinfo.SourceServerInfoFile))
+		if err != nil {
+			return err
+		}
+
+		srcClient, err := sourceclient.New(serverInfo)
 		if err != nil {
 			return fmt.Errorf("failed to create a new gRPC client: %w", err)
 		}
 
-		udsGRPCClient, err = udsource.NewUDSgRPCBasedUDSource(srcClient)
+		udsGRPCClient, err = udsource.NewUDSgRPCBasedUDSource(sp.VertexInstance, srcClient)
 		if err != nil {
 			return fmt.Errorf("failed to create gRPC client, %w", err)
 		}
@@ -205,8 +213,15 @@ func (sp *SourceProcessor) Start(ctx context.Context) error {
 		readyCheckers = append(readyCheckers, udsGRPCClient)
 	}
 	maxMessageSize := sharedutil.LookupEnvIntOr(dfv1.EnvGRPCMaxMessageSize, sdkclient.DefaultGRPCMaxMessageSize)
+	var err error
 	if sp.VertexInstance.Vertex.HasUDTransformer() {
-		sdkClient, err = sourcetransformer.New(sourcetransformer.WithMaxMessageSize(maxMessageSize))
+		// Wait for server info to be ready
+		serverInfo, err := sdkserverinfo.SDKServerInfo(sdkserverinfo.WithServerInfoFilePath(sdkserverinfo.SourceTransformerServerInfoFile))
+		if err != nil {
+			return err
+		}
+
+		sdkClient, err = sourcetransformer.New(serverInfo, sdkclient.WithMaxMessageSize(maxMessageSize))
 		if err != nil {
 			return fmt.Errorf("failed to create gRPC client, %w", err)
 		}
@@ -310,9 +325,6 @@ func (sp *SourceProcessor) getSourcer(
 			kafka.WithGroupName(x.ConsumerGroupName),
 			kafka.WithLogger(logger),
 		}
-		if x.IncludeHeaders {
-			readOptions = append(readOptions, kafka.WithHeaders())
-		}
 		if l := sp.VertexInstance.Vertex.Spec.Limits; l != nil && l.ReadTimeout != nil {
 			readOptions = append(readOptions, kafka.WithReadTimeOut(l.ReadTimeout.Duration))
 		}
@@ -332,83 +344,73 @@ func (sp *SourceProcessor) getSourcer(
 }
 
 func (sp *SourceProcessor) getSourceGoWhereDecider(shuffleFuncMap map[string]*shuffle.Shuffle) forwarder.GoWhere {
-	getToBufferPartition := GetPartitionedBufferIdx()
-
-	fsd := forwarder.GoWhere(func(keys []string, tags []string) ([]forwarder.VertexBuffer, error) {
+	// create the conditional forwarder
+	conditionalForwarder := forwarder.GoWhere(func(keys []string, tags []string, msgId string) ([]forwarder.VertexBuffer, error) {
 		var result []forwarder.VertexBuffer
 
+		// Iterate through the edges
 		for _, edge := range sp.VertexInstance.Vertex.Spec.ToEdges {
-			if edge.ToVertexType == dfv1.VertexTypeReduceUDF && edge.GetToVertexPartitionCount() > 1 { // Need to shuffle
-				toVertexPartition := shuffleFuncMap[fmt.Sprintf("%s:%s", edge.From, edge.To)].Shuffle(keys)
-				result = append(result, forwarder.VertexBuffer{
-					ToVertexName:         edge.To,
-					ToVertexPartitionIdx: toVertexPartition,
-				})
-			} else {
-				result = append(result, forwarder.VertexBuffer{
-					ToVertexName:         edge.To,
-					ToVertexPartitionIdx: getToBufferPartition(edge.To, edge.GetToVertexPartitionCount()),
-				})
+			edgeKey := fmt.Sprintf("%s:%s", edge.From, edge.To)
+
+			// if the edge has more than one partition, shuffle the message
+			// else forward the message to the default partition
+			partitionIdx := isb.DefaultPartitionIdx
+			if edge.GetToVertexPartitionCount() > 1 {
+				if edge.ToVertexType == dfv1.VertexTypeReduceUDF { // Shuffle on keys
+					partitionIdx = shuffleFuncMap[edgeKey].ShuffleOnKeys(keys)
+				} else { // Shuffle on msgId
+					partitionIdx = shuffleFuncMap[edgeKey].ShuffleOnId(msgId)
+				}
 			}
+
+			result = append(result, forwarder.VertexBuffer{
+				ToVertexName:         edge.To,
+				ToVertexPartitionIdx: partitionIdx,
+			})
 		}
+
 		return result, nil
 	})
-	return fsd
+	return conditionalForwarder
 }
 
 func (sp *SourceProcessor) getTransformerGoWhereDecider(shuffleFuncMap map[string]*shuffle.Shuffle) forwarder.GoWhere {
-	getToBufferPartition := GetPartitionedBufferIdx()
-	fsd := forwarder.GoWhere(func(keys []string, tags []string) ([]forwarder.VertexBuffer, error) {
+	// create the conditional forwarder
+	conditionalForwarder := forwarder.GoWhere(func(keys []string, tags []string, msgId string) ([]forwarder.VertexBuffer, error) {
 		var result []forwarder.VertexBuffer
 
+		// Drop message if it contains the special tag
 		if sharedutil.StringSliceContains(tags, dfv1.MessageTagDrop) {
 			return result, nil
 		}
 
+		// Iterate through the edges
 		for _, edge := range sp.VertexInstance.Vertex.Spec.ToEdges {
-			// If returned tags are not "DROP", and there are no conditions defined in the edge, treat it as "ALL".
-			if edge.Conditions == nil || edge.Conditions.Tags == nil || len(edge.Conditions.Tags.Values) == 0 {
-				if edge.ToVertexType == dfv1.VertexTypeReduceUDF && edge.GetToVertexPartitionCount() > 1 { // Need to shuffle
-					toVertexPartition := shuffleFuncMap[fmt.Sprintf("%s:%s", edge.From, edge.To)].Shuffle(keys)
-					result = append(result, forwarder.VertexBuffer{
-						ToVertexName:         edge.To,
-						ToVertexPartitionIdx: toVertexPartition,
-					})
-				} else {
-					result = append(result, forwarder.VertexBuffer{
-						ToVertexName:         edge.To,
-						ToVertexPartitionIdx: getToBufferPartition(edge.To, edge.GetToVertexPartitionCount()),
-					})
-				}
-			} else {
-				if sharedutil.CompareSlice(edge.Conditions.Tags.GetOperator(), tags, edge.Conditions.Tags.Values) {
-					if edge.ToVertexType == dfv1.VertexTypeReduceUDF && edge.GetToVertexPartitionCount() > 1 { // Need to shuffle
-						toVertexPartition := shuffleFuncMap[fmt.Sprintf("%s:%s", edge.From, edge.To)].Shuffle(keys)
-						result = append(result, forwarder.VertexBuffer{
-							ToVertexName:         edge.To,
-							ToVertexPartitionIdx: toVertexPartition,
-						})
-					} else {
-						result = append(result, forwarder.VertexBuffer{
-							ToVertexName:         edge.To,
-							ToVertexPartitionIdx: getToBufferPartition(edge.To, edge.GetToVertexPartitionCount()),
-						})
+			edgeKey := fmt.Sprintf("%s:%s", edge.From, edge.To)
+
+			// Condition to proceed for forwarding message: No conditions on edge, or message tags match edge conditions
+			proceed := edge.Conditions == nil || edge.Conditions.Tags == nil || len(edge.Conditions.Tags.Values) == 0 || sharedutil.CompareSlice(edge.Conditions.Tags.GetOperator(), tags, edge.Conditions.Tags.Values)
+
+			if proceed {
+				// if the edge has more than one partition, shuffle the message
+				// else forward the message to the default partition
+				partitionIdx := isb.DefaultPartitionIdx
+				if edge.GetToVertexPartitionCount() > 1 {
+					if edge.ToVertexType == dfv1.VertexTypeReduceUDF { // Shuffle on keys
+						partitionIdx = shuffleFuncMap[edgeKey].ShuffleOnKeys(keys)
+					} else { // Shuffle on msgId
+						partitionIdx = shuffleFuncMap[edgeKey].ShuffleOnId(msgId)
 					}
 				}
+
+				result = append(result, forwarder.VertexBuffer{
+					ToVertexName:         edge.To,
+					ToVertexPartitionIdx: partitionIdx,
+				})
 			}
 		}
+
 		return result, nil
 	})
-	return fsd
-}
-
-// GetPartitionedBufferIdx returns a function that returns a partitioned buffer index based on the toVertex name and the partition count
-// it distributes the messages evenly to the partitions of the toVertex based on the message count(round robin)
-func GetPartitionedBufferIdx() func(toVertex string, toVertexPartitionCount int) int32 {
-	messagePerPartitionMap := make(map[string]int)
-	return func(toVertex string, toVertexPartitionCount int) int32 {
-		vertexPartition := (messagePerPartitionMap[toVertex] + 1) % toVertexPartitionCount
-		messagePerPartitionMap[toVertex] = vertexPartition
-		return int32(vertexPartition)
-	}
+	return conditionalForwarder
 }

@@ -98,7 +98,7 @@ func (u *UDSgRPCBasedUDSink) ApplySink(ctx context.Context, requests []*sinkpb.S
 		if r, existing := resMap[m.GetId()]; !existing {
 			errs[i] = fmt.Errorf("not found in response")
 		} else {
-			if !r.Success {
+			if r.Status != sinkpb.Status_SUCCESS {
 				if r.GetErrMsg() != "" {
 					errs[i] = fmt.Errorf(r.GetErrMsg())
 				} else {

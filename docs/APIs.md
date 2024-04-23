@@ -1973,6 +1973,34 @@ Kubernetes meta/v1.Duration </a> </em>
 
 <td>
 
+<p>
+
+Length is the duration of the fixed window.
+
+</p>
+
+</td>
+
+</tr>
+
+<tr>
+
+<td>
+
+<code>streaming</code></br> <em> bool </em>
+
+</td>
+
+<td>
+
+<em>(Optional)</em>
+
+<p>
+
+Streaming should be set to true if the reduce udf is streaming.
+
+</p>
+
 </td>
 
 </tr>
@@ -2442,6 +2470,8 @@ Size of each generated message
 
 <td>
 
+<em>(Optional)</em>
+
 <p>
 
 KeyCount is the number of unique keys in the payload
@@ -2462,9 +2492,38 @@ KeyCount is the number of unique keys in the payload
 
 <td>
 
+<em>(Optional)</em>
+
 <p>
 
 Value is an optional uint64 value to be written in to the payload
+
+</p>
+
+</td>
+
+</tr>
+
+<tr>
+
+<td>
+
+<code>jitter</code></br> <em>
+<a href="https://pkg.go.dev/k8s.io/apimachinery/pkg/apis/meta/v1#Duration">
+Kubernetes meta/v1.Duration </a> </em>
+
+</td>
+
+<td>
+
+<em>(Optional)</em>
+
+<p>
+
+Jitter is the jitter for the message generation, used to simulate out of
+order messages for example if the jitter is 10s, then the message’s
+event time will be delayed by a random time between 0 and 10s which will
+result in the message being out of order by 0 to 10s
 
 </p>
 
@@ -5932,6 +5991,32 @@ Auth information
 
 </table>
 
+<h3 id="numaflow.numaproj.io/v1alpha1.NoStore">
+
+NoStore
+
+</h3>
+
+<p>
+
+(<em>Appears on:</em>
+<a href="#numaflow.numaproj.io/v1alpha1.PBQStorage">PBQStorage</a>)
+
+</p>
+
+<p>
+
+<p>
+
+NoStore means there will be no persistence storage and there will be
+data loss during pod restarts. Use this option only if you do not care
+about correctness (e.g., approx statistics pipeline like sampling rate,
+etc.).
+
+</p>
+
+</p>
+
 <h3 id="numaflow.numaproj.io/v1alpha1.PBQStorage">
 
 PBQStorage
@@ -6004,6 +6089,23 @@ PersistenceStrategy </a> </em>
 <code>emptyDir</code></br> <em>
 <a href="https://v1-18.docs.kubernetes.io/docs/reference/generated/kubernetes-api/v1.18/#emptydirvolumesource-v1-core">
 Kubernetes core/v1.EmptyDirVolumeSource </a> </em>
+
+</td>
+
+<td>
+
+<em>(Optional)</em>
+
+</td>
+
+</tr>
+
+<tr>
+
+<td>
+
+<code>no\_store</code></br> <em>
+<a href="#numaflow.numaproj.io/v1alpha1.NoStore"> NoStore </a> </em>
 
 </td>
 
@@ -7966,6 +8068,80 @@ CooldownSeconds if not set.
 
 </table>
 
+<h3 id="numaflow.numaproj.io/v1alpha1.SessionWindow">
+
+SessionWindow
+
+</h3>
+
+<p>
+
+(<em>Appears on:</em>
+<a href="#numaflow.numaproj.io/v1alpha1.Window">Window</a>)
+
+</p>
+
+<p>
+
+<p>
+
+SessionWindow describes a session window
+
+</p>
+
+</p>
+
+<table>
+
+<thead>
+
+<tr>
+
+<th>
+
+Field
+
+</th>
+
+<th>
+
+Description
+
+</th>
+
+</tr>
+
+</thead>
+
+<tbody>
+
+<tr>
+
+<td>
+
+<code>timeout</code></br> <em>
+<a href="https://pkg.go.dev/k8s.io/apimachinery/pkg/apis/meta/v1#Duration">
+Kubernetes meta/v1.Duration </a> </em>
+
+</td>
+
+<td>
+
+<p>
+
+Timeout is the duration of inactivity after which a session window
+closes.
+
+</p>
+
+</td>
+
+</tr>
+
+</tbody>
+
+</table>
+
 <h3 id="numaflow.numaproj.io/v1alpha1.SideInput">
 
 SideInput
@@ -8445,6 +8621,12 @@ Kubernetes meta/v1.Duration </a> </em>
 
 <td>
 
+<p>
+
+Length is the duration of the sliding window.
+
+</p>
+
 </td>
 
 </tr>
@@ -8460,6 +8642,35 @@ Kubernetes meta/v1.Duration </a> </em>
 </td>
 
 <td>
+
+<p>
+
+Slide is the slide parameter that controls the frequency at which the
+sliding window is created.
+
+</p>
+
+</td>
+
+</tr>
+
+<tr>
+
+<td>
+
+<code>streaming</code></br> <em> bool </em>
+
+</td>
+
+<td>
+
+<em>(Optional)</em>
+
+<p>
+
+Streaming should be set to true if the reduce udf is streaming.
+
+</p>
 
 </td>
 
@@ -10564,6 +10775,24 @@ Description
 
 <code>sliding</code></br> <em>
 <a href="#numaflow.numaproj.io/v1alpha1.SlidingWindow"> SlidingWindow
+</a> </em>
+
+</td>
+
+<td>
+
+<em>(Optional)</em>
+
+</td>
+
+</tr>
+
+<tr>
+
+<td>
+
+<code>session</code></br> <em>
+<a href="#numaflow.numaproj.io/v1alpha1.SessionWindow"> SessionWindow
 </a> </em>
 
 </td>

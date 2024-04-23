@@ -19,12 +19,10 @@ package sinker
 import (
 	"context"
 	"fmt"
-	"log"
-	"time"
 
 	sinkpb "github.com/numaproj/numaflow-go/pkg/apis/proto/sink/v1"
+	"github.com/numaproj/numaflow-go/pkg/info"
 	"google.golang.org/grpc"
-	"google.golang.org/grpc/credentials/insecure"
 	"google.golang.org/protobuf/types/known/emptypb"
 
 	"github.com/numaproj/numaflow/pkg/sdkclient"
@@ -39,37 +37,19 @@ type client struct {
 
 var _ Client = (*client)(nil)
 
-// New creates a new client object.
-func New(inputOptions ...Option) (Client, error) {
-	var opts = &options{
-		sockAddr:                   sdkclient.SinkAddr,
-		serverInfoFilePath:         sdkclient.ServerInfoFilePath,
-		serverInfoReadinessTimeout: 120 * time.Second,                   // Default timeout is 120 seconds
-		maxMessageSize:             sdkclient.DefaultGRPCMaxMessageSize, // 64 MB
-	}
+func New(serverInfo *info.ServerInfo, inputOptions ...sdkclient.Option) (Client, error) {
+	var opts = sdkclient.DefaultOptions(sdkclient.SinkAddr)
 
 	for _, inputOption := range inputOptions {
 		inputOption(opts)
 	}
 
-	// Wait for server info to be ready
-	serverInfo, err := util.WaitForServerInfo(opts.serverInfoReadinessTimeout, opts.serverInfoFilePath)
+	// Connect to the server
+	conn, err := util.ConnectToServer(opts.UdsSockAddr(), serverInfo, opts.MaxMessageSize())
 	if err != nil {
 		return nil, err
 	}
-
-	if serverInfo != nil {
-		log.Printf("ServerInfo: %v\n", serverInfo)
-	}
-
-	// connect to the server
 	c := new(client)
-	sockAddr := fmt.Sprintf("%s:%s", sdkclient.UDS, opts.sockAddr)
-	conn, err := grpc.Dial(sockAddr, grpc.WithTransportCredentials(insecure.NewCredentials()),
-		grpc.WithDefaultCallOptions(grpc.MaxCallRecvMsgSize(opts.maxMessageSize), grpc.MaxCallSendMsgSize(opts.maxMessageSize)))
-	if err != nil {
-		return nil, fmt.Errorf("failed to execute grpc.Dial(%q): %w", sockAddr, err)
-	}
 
 	c.conn = conn
 	c.grpcClt = sinkpb.NewSinkClient(conn)

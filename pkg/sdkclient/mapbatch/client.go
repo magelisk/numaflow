@@ -18,10 +18,9 @@ package mapbatch
 
 import (
 	"context"
-	"log"
-	"time"
 
 	mapbpb "github.com/numaproj/numaflow-go/pkg/apis/proto/mapbatch/v1"
+	"github.com/numaproj/numaflow-go/pkg/info"
 	"google.golang.org/grpc"
 	"google.golang.org/protobuf/types/known/emptypb"
 
@@ -36,31 +35,15 @@ type client struct {
 }
 
 // New creates a new client object.
-func New(inputOptions ...Option) (Client, error) {
-	var opts = &options{
-		maxMessageSize:             sdkclient.DefaultGRPCMaxMessageSize, // 64 MB
-		serverInfoFilePath:         sdkclient.ServerInfoFilePath,
-		tcpSockAddr:                sdkclient.TcpAddr,
-		udsSockAddr:                sdkclient.MapAddr,
-		serverInfoReadinessTimeout: 120 * time.Second, // Default timeout is 120 seconds
-	}
+func New(serverInfo *info.ServerInfo, inputOptions ...sdkclient.Option) (Client, error) {
+	var opts = sdkclient.DefaultOptions(sdkclient.MapAddr)
 
 	for _, inputOption := range inputOptions {
 		inputOption(opts)
 	}
 
-	// Wait for server info to be ready
-	serverInfo, err := util.WaitForServerInfo(opts.serverInfoReadinessTimeout, opts.serverInfoFilePath)
-	if err != nil {
-		return nil, err
-	}
-
-	if serverInfo != nil {
-		log.Printf("ServerInfo: %v\n", serverInfo)
-	}
-
 	// Connect to the server
-	conn, err := util.ConnectToServer(opts.udsSockAddr, opts.tcpSockAddr, serverInfo, opts.maxMessageSize)
+	conn, err := util.ConnectToServer(opts.UdsSockAddr(), serverInfo, opts.MaxMessageSize())
 	if err != nil {
 		return nil, err
 	}
@@ -98,7 +81,7 @@ func (c *client) IsReady(ctx context.Context, in *emptypb.Empty) (bool, error) {
 // MapFn applies a function to each datum element.
 func (c *client) MapBatchFn(ctx context.Context, request *mapbpb.MapBatchRequest) (*mapbpb.MapBatchResponse, error) {
 	mapResponse, err := c.grpcClt.MapBatchFn(ctx, request)
-	err = util.ToUDFErr("c.grpcClt.MapBatchFn", err)
+	err = util.ToUDFErr("c.grpcClt.MapFn", err)
 	if err != nil {
 		return nil, err
 	}

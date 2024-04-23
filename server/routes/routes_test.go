@@ -17,12 +17,15 @@ limitations under the License.
 package routes
 
 import (
-	"github.com/numaproj/numaflow/server/authz"
 	"net/http"
 	"net/http/httptest"
 	"testing"
 
+	"sigs.k8s.io/controller-runtime/pkg/manager/signals"
+
 	"github.com/gin-gonic/gin"
+	"github.com/numaproj/numaflow/pkg/shared/logging"
+	"github.com/numaproj/numaflow/server/authz"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -30,20 +33,23 @@ import (
 func TestRoutes(t *testing.T) {
 	// skipping this test for the time being
 	t.Skip()
+	log := logging.NewLogger().Named("server")
 	router := gin.Default()
 	managedNamespace := "numaflow-system"
 	namespaced := false
 	sysInfo := SystemInfo{
 		ManagedNamespace: managedNamespace,
 		Namespaced:       namespaced,
+		IsReadOnly:       false,
 	}
 
 	authInfo := AuthInfo{
 		DisableAuth:   false,
 		DexServerAddr: "test-dex-server-addr",
 	}
+
 	authRouteMap := authz.RouteMap{}
-	Routes(router, sysInfo, authInfo, "/", authRouteMap)
+	Routes(logging.WithLogger(signals.SetupSignalHandler(), log), router, sysInfo, authInfo, "/", authRouteMap)
 	t.Run("/404", func(t *testing.T) {
 		w := httptest.NewRecorder()
 		req, err := http.NewRequest(http.MethodGet, "/404", nil)

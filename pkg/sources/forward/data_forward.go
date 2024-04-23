@@ -119,7 +119,6 @@ func NewDataForward(
 	}
 	// add logger from parent ctx to child context.
 	isdf.ctx = logging.WithLogger(ctx, defaultOptions.logger)
-	// set the current watermark
 	return &isdf, nil
 }
 
@@ -237,7 +236,7 @@ func (df *DataForward) forwardAChunk(ctx context.Context) {
 							publisher = df.createToVertexWatermarkPublisher(toVertexName, sp)
 							vertexPublishers[sp] = publisher
 						}
-						idlehandler.PublishIdleWatermark(ctx, df.toBuffers[toVertexName][index], publisher, df.idleManager, df.opts.logger, df.vertexName, df.pipelineName, dfv1.VertexTypeSource, df.vertexReplica, fetchedWm)
+						idlehandler.PublishIdleWatermark(ctx, wmb.PARTITION_0, df.toBuffers[toVertexName][index], publisher, df.idleManager, df.opts.logger, df.vertexName, df.pipelineName, dfv1.VertexTypeSource, df.vertexReplica, fetchedWm)
 					}
 				}
 			}
@@ -312,16 +311,23 @@ func (df *DataForward) forwardAChunk(ctx context.Context) {
 	// publish source watermark and assign IsLate attribute based on new event time.
 	var writeMessages []*isb.WriteMessage
 	var transformedReadMessages []*isb.ReadMessage
+	latestEtMap := make(map[int32]int64)
+
 	for _, m := range transformerResults {
 		writeMessages = append(writeMessages, m.writeMessages...)
 		for _, message := range m.writeMessages {
+			message.Headers = m.readMessage.Headers
 			// we convert each writeMessage to isb.ReadMessage by providing its parent ReadMessage's ReadOffset.
 			// since we use message event time instead of the watermark to determine and publish source watermarks,
 			// time.UnixMilli(-1) is assigned to the message watermark. transformedReadMessages are immediately
 			// used below for publishing source watermarks.
+			if latestEt, ok := latestEtMap[m.readMessage.ReadOffset.PartitionIdx()]; !ok || message.EventTime.UnixNano() < latestEt {
+				latestEtMap[m.readMessage.ReadOffset.PartitionIdx()] = message.EventTime.UnixNano()
+			}
 			transformedReadMessages = append(transformedReadMessages, message.ToReadMessage(m.readMessage.ReadOffset, time.UnixMilli(-1)))
 		}
 	}
+
 	// publish source watermark
 	df.srcWMPublisher.PublishSourceWatermarks(transformedReadMessages)
 	// update the watermark configs for lastTimestampSrcWMUpdated, lastFetchedSrcWatermark and lastTimestampIdleWMFound.
@@ -390,7 +396,7 @@ func (df *DataForward) forwardAChunk(ctx context.Context) {
 						activeWatermarkBuffers[toVertexName][index] = true
 						// update the watermark configs for lastTimestampSrcWMUpdated, lastFetchedSrcWatermark and lastTimestampIdleWMFound.
 						// reset because the toBuffer partition is no longer idling
-						df.idleManager.Reset(df.toBuffers[toVertexName][index].GetName())
+						df.idleManager.MarkActive(wmb.PARTITION_0, df.toBuffers[toVertexName][index].GetName())
 					}
 				}
 				// This (len(offsets) == 0) happens at conditional forwarding, there's no data written to the buffer
@@ -411,7 +417,7 @@ func (df *DataForward) forwardAChunk(ctx context.Context) {
 							publisher = df.createToVertexWatermarkPublisher(toVertexName, sp)
 							vertexPublishers[sp] = publisher
 						}
-						idlehandler.PublishIdleWatermark(ctx, df.toBuffers[toVertexName][index], publisher, df.idleManager, df.opts.logger, df.vertexName, df.pipelineName, dfv1.VertexTypeSource, df.vertexReplica, processorWM)
+						idlehandler.PublishIdleWatermark(ctx, wmb.PARTITION_0, df.toBuffers[toVertexName][index], publisher, df.idleManager, df.opts.logger, df.vertexName, df.pipelineName, dfv1.VertexTypeSource, df.vertexReplica, processorWM)
 					}
 				}
 			}
@@ -572,7 +578,7 @@ func (df *DataForward) applyTransformer(ctx context.Context, readMessage *isb.Re
 // whereToStep executes the WhereTo interfaces and then updates the to step's writeToBuffers buffer.
 func (df *DataForward) whereToStep(writeMessage *isb.WriteMessage, messageToStep map[string][][]isb.Message, readMessage *isb.ReadMessage) error {
 	// call WhereTo and drop it on errors
-	to, err := df.toWhichStepDecider.WhereTo(writeMessage.Keys, writeMessage.Tags)
+	to, err := df.toWhichStepDecider.WhereTo(writeMessage.Keys, writeMessage.Tags, writeMessage.ID)
 	if err != nil {
 		df.opts.logger.Errorw("failed in whereToStep", zap.Error(isb.MessageWriteErr{Name: df.reader.GetName(), Header: readMessage.Header, Body: readMessage.Body, Message: fmt.Sprintf("WhereTo failed, %s", err)}))
 		// a shutdown can break the blocking loop caused due to InternalErr

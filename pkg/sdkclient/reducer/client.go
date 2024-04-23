@@ -18,14 +18,12 @@ package reducer
 
 import (
 	"context"
+	"errors"
 	"io"
-	"log"
-	"time"
 
 	reducepb "github.com/numaproj/numaflow-go/pkg/apis/proto/reduce/v1"
-	"golang.org/x/sync/errgroup"
+	"github.com/numaproj/numaflow-go/pkg/info"
 	"google.golang.org/grpc"
-	"google.golang.org/grpc/status"
 	"google.golang.org/protobuf/types/known/emptypb"
 
 	"github.com/numaproj/numaflow/pkg/sdkclient"
@@ -39,31 +37,15 @@ type client struct {
 }
 
 // New creates a new client object.
-func New(inputOptions ...Option) (Client, error) {
-	var opts = &options{
-		maxMessageSize:             sdkclient.DefaultGRPCMaxMessageSize, // 64 MB
-		serverInfoFilePath:         sdkclient.ServerInfoFilePath,
-		tcpSockAddr:                sdkclient.TcpAddr,
-		udsSockAddr:                sdkclient.ReduceAddr,
-		serverInfoReadinessTimeout: 120 * time.Second, // Default timeout is 120 seconds
-	}
+func New(serverInfo *info.ServerInfo, inputOptions ...sdkclient.Option) (Client, error) {
+	var opts = sdkclient.DefaultOptions(sdkclient.ReduceAddr)
 
 	for _, inputOption := range inputOptions {
 		inputOption(opts)
 	}
 
-	// Wait for server info to be ready
-	serverInfo, err := util.WaitForServerInfo(opts.serverInfoReadinessTimeout, opts.serverInfoFilePath)
-	if err != nil {
-		return nil, err
-	}
-
-	if serverInfo != nil {
-		log.Printf("ServerInfo: %v\n", serverInfo)
-	}
-
 	// Connect to the server
-	conn, err := util.ConnectToServer(opts.udsSockAddr, opts.tcpSockAddr, serverInfo, opts.maxMessageSize)
+	conn, err := util.ConnectToServer(opts.UdsSockAddr(), serverInfo, opts.MaxMessageSize())
 	if err != nil {
 		return nil, err
 	}
@@ -94,59 +76,79 @@ func (c *client) IsReady(ctx context.Context, in *emptypb.Empty) (bool, error) {
 	return resp.GetReady(), nil
 }
 
-// ReduceFn applies a reduce function to a datum stream.
-func (c *client) ReduceFn(ctx context.Context, datumStreamCh <-chan *reducepb.ReduceRequest) (*reducepb.ReduceResponse, error) {
-	var g errgroup.Group
-	var finalResponse = &reducepb.ReduceResponse{}
+// ReduceFn applies a reduce function to a datum stream asynchronously.
+func (c *client) ReduceFn(ctx context.Context, datumStreamCh <-chan *reducepb.ReduceRequest) (<-chan *reducepb.ReduceResponse, <-chan error) {
+	var (
+		errCh      = make(chan error)
+		responseCh = make(chan *reducepb.ReduceResponse)
+	)
 
-	stream, err := c.grpcClt.ReduceFn(ctx)
-	err = util.ToUDFErr("c.grpcClt.ReduceFn", err)
-	if err != nil {
-		return nil, err
-	}
 	// stream the messages to server
-	g.Go(func() error {
+	stream, err := c.grpcClt.ReduceFn(ctx)
+
+	if err != nil {
+		go func(sErr error) {
+			errCh <- util.ToUDFErr("c.grpcClt.ReduceFn", sErr)
+		}(err)
+	}
+
+	// read from the datumStreamCh channel and send it to the server stream
+	go func() {
 		var sendErr error
-		for datum := range datumStreamCh {
+	outerLoop:
+		for {
 			select {
 			case <-ctx.Done():
-				return status.FromContextError(ctx.Err()).Err()
-			default:
-				if sendErr = stream.Send(datum); sendErr != nil {
-					// we don't need to invoke close on the stream
-					// if there is an error gRPC will close the stream.
-					return sendErr
+				return
+			case datum, ok := <-datumStreamCh:
+				if !ok {
+					break outerLoop
+				}
+				// TODO: figure out why send is getting EOF (could be because the client has already handled SIGTERM)
+				if sendErr = stream.Send(datum); sendErr != nil && !errors.Is(sendErr, io.EOF) {
+					errCh <- util.ToUDFErr("ReduceFn stream.Send()", sendErr)
+					return
 				}
 			}
 		}
-		return stream.CloseSend()
-	})
 
-	// read the response from the server stream
-outputLoop:
-	for {
 		select {
 		case <-ctx.Done():
-			return nil, util.ToUDFErr("ReduceFn OutputLoop", status.FromContextError(ctx.Err()).Err())
+			return
 		default:
-			var resp *reducepb.ReduceResponse
-			resp, err = stream.Recv()
-			if err == io.EOF {
-				break outputLoop
+			sendErr = stream.CloseSend()
+			if sendErr != nil && !errors.Is(sendErr, io.EOF) {
+				errCh <- util.ToUDFErr("ReduceFn stream.CloseSend()", sendErr)
 			}
-			err = util.ToUDFErr("ReduceFn stream.Recv()", err)
-			if err != nil {
-				return nil, err
-			}
-			finalResponse.Results = append(finalResponse.Results, resp.Results...)
 		}
-	}
+	}()
 
-	err = g.Wait()
-	err = util.ToUDFErr("ReduceFn errorGroup", err)
-	if err != nil {
-		return nil, err
-	}
+	// read the response from the server stream and send it to responseCh channel
+	// any error is sent to errCh channel
+	go func() {
+		var resp *reducepb.ReduceResponse
+		var recvErr error
+		for {
+			select {
+			case <-ctx.Done():
+				errCh <- ctx.Err()
+				return
+			default:
+				resp, recvErr = stream.Recv()
+				// if the stream is closed, close the responseCh return
+				if errors.Is(recvErr, io.EOF) {
+					// nil channel will never be selected
+					errCh = nil
+					close(responseCh)
+					return
+				}
+				if recvErr != nil {
+					errCh <- util.ToUDFErr("ReduceFn stream.Recv()", recvErr)
+				}
+				responseCh <- resp
+			}
+		}
+	}()
 
-	return finalResponse, nil
+	return responseCh, errCh
 }

@@ -18,6 +18,10 @@ export interface UserInfo {
 export interface AppContextProps {
   systemInfo: SystemInfo | undefined;
   systemInfoError: any | undefined;
+  host: string;
+  namespace: string;
+  isPlugin: boolean;
+  isReadOnly: boolean;
   sidebarProps?: SlidingSideBarProps;
   setSidebarProps: (props: SlidingSideBarProps | undefined) => void;
   errors: AppError[];
@@ -25,4 +29,9 @@ export interface AppContextProps {
   clearErrors: () => void;
   userInfo?: UserInfo;
   setUserInfo: (userInfo: UserInfo) => void;
+}
+
+export interface AppProps {
+  hostUrl?: string;
+  namespace?: string;
 }
