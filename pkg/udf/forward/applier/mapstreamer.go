@@ -25,12 +25,12 @@ import (
 // MapStreamApplier applies the map stream udf on the read message and gives back response. Any UserError will be retried here, while
 // InternalErr can be returned and could be retried by the callee.
 type MapStreamApplier interface {
-	ApplyMapStream(ctx context.Context, message *isb.ReadMessage, writeMessageCh chan<- isb.WriteMessage) error
+	ApplyMapStream(ctx context.Context, message []*isb.ReadMessage, writeMessageCh chan<- isb.WriteMessage) error
 }
 
 // ApplyMapStreamFunc  utility function used to create a MapStreamApplier implementation
-type ApplyMapStreamFunc func(context.Context, *isb.ReadMessage, chan<- isb.WriteMessage) error
+type ApplyMapStreamFunc func(context.Context, []*isb.ReadMessage, chan<- isb.WriteMessage) error
 
-func (f ApplyMapStreamFunc) ApplyMapStream(ctx context.Context, message *isb.ReadMessage, writeMessageCh chan<- isb.WriteMessage) error {
+func (f ApplyMapStreamFunc) ApplyMapStream(ctx context.Context, message []*isb.ReadMessage, writeMessageCh chan<- isb.WriteMessage) error {
 	return f(ctx, message, writeMessageCh)
 }

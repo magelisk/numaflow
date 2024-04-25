@@ -26,7 +26,7 @@ package mapstream.v1;
 
 service MapStream {
   // MapStreamFn applies a function to each request element and returns a stream.
-  rpc MapStreamFn(MapStreamRequest) returns (stream MapStreamResponse);
+  rpc MapStreamFn(stream MapStreamRequest) returns (stream MapStreamResponse);
 
   // IsReady is the heartbeat endpoint for gRPC.
   rpc IsReady(google.protobuf.Empty) returns (ReadyResponse);

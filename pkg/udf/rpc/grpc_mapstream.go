@@ -19,6 +19,7 @@ package rpc
 import (
 	"context"
 	"fmt"
+	"log"
 	"time"
 
 	mapstreampb "github.com/numaproj/numaflow-go/pkg/apis/proto/mapstream/v1"
@@ -68,26 +69,45 @@ func (u *GRPCBasedMapStream) WaitUntilReady(ctx context.Context) error {
 	}
 }
 
-func (u *GRPCBasedMapStream) ApplyMapStream(ctx context.Context, message *isb.ReadMessage, writeMessageCh chan<- isb.WriteMessage) error {
+func (u *GRPCBasedMapStream) ApplyMapStream(ctx context.Context, messages []*isb.ReadMessage, writeMessageCh chan<- isb.WriteMessage) error {
 	defer close(writeMessageCh)
 
-	keys := message.Keys
-	payload := message.Body.Payload
-	offset := message.ReadOffset
-	parentMessageInfo := message.MessageInfo
+	// keys := message.Keys
+	// payload := message.Body.Payload
+	offset := messages[0].ReadOffset
+	parentMessageInfo := messages[0].MessageInfo
 
-	var d = &mapstreampb.MapStreamRequest{
-		Keys:      keys,
-		Value:     payload,
-		EventTime: timestamppb.New(parentMessageInfo.EventTime),
-		Watermark: timestamppb.New(message.Watermark),
-		Headers:   message.Headers,
+	// var d = &mapstreampb.MapStreamRequest{
+	// 	Keys:      keys,
+	// 	Value:     payload,
+	// 	EventTime: timestamppb.New(parentMessageInfo.EventTime),
+	// 	Watermark: timestamppb.New(message.Watermark),
+	// 	Headers:   message.Headers,
+	// }
+
+	toSend := make([]*mapstreampb.MapStreamRequest, len(messages))
+	log.Printf("MDW: Got %d message", len(messages))
+	for _, msg := range messages {
+		keys := msg.Keys
+		payload := msg.Body.Payload
+		// offset := msg.ReadOffset
+		parentMessageInfo := msg.MessageInfo
+
+		var d = &mapstreampb.MapStreamRequest{
+			Keys:      keys,
+			Value:     payload,
+			EventTime: timestamppb.New(parentMessageInfo.EventTime),
+			Watermark: timestamppb.New(msg.Watermark),
+			Headers:   msg.Headers,
+		}
+		toSend = append(toSend, d)
 	}
-
+	log.Print("MDW: Made To Send")
 	responseCh := make(chan *mapstreampb.MapStreamResponse)
 	errs, ctx := errgroup.WithContext(ctx)
 	errs.Go(func() error {
-		err := u.client.MapStreamFn(ctx, d, responseCh)
+		log.Print("Make call to MapStreamFn")
+		err := u.client.MapStreamFn(ctx, toSend, responseCh)
 		if err != nil {
 			err = &ApplyUDFErr{
 				UserUDFErr: false,
@@ -105,6 +125,7 @@ func (u *GRPCBasedMapStream) ApplyMapStream(ctx context.Context, message *isb.Re
 	i := 0
 	for response := range responseCh {
 		result := response.Result
+
 		i++
 		keys := result.GetKeys()
 		taggedMessage := &isb.WriteMessage{

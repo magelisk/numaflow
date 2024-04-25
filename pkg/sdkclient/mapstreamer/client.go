@@ -20,6 +20,7 @@ import (
 	"context"
 	"fmt"
 	"io"
+	"log"
 
 	"google.golang.org/grpc"
 	"google.golang.org/protobuf/types/known/emptypb"
@@ -77,12 +78,36 @@ func (c *client) IsReady(ctx context.Context, in *emptypb.Empty) (bool, error) {
 	return resp.GetReady(), nil
 }
 
+// // SinkFn applies a function to a list of requests.
+// func (c *client) SinkFn(ctx context.Context, requests []*mapstreampb.MapStreamRequest) (*sinkpb.SinkResponse, error) {
+// 	stream, err := c.grpcClt.SinkFn(ctx)
+// 	if err != nil {
+// 		return nil, fmt.Errorf("failed to execute c.grpcClt.SinkFn(): %w", err)
+// 	}
+// 	for _, datum := range requests {
+// 		if err := stream.Send(datum); err != nil {
+// 			return nil, fmt.Errorf("failed to execute stream.Send(%v): %w", datum, err)
+// 		}
+// 	}
+// 	responseList, err := stream.CloseAndRecv()
+// 	if err != nil {
+// 		return nil, fmt.Errorf("failed to execute stream.CloseAndRecv(): %w", err)
+// 	}
+
+// 	return responseList, nil
+// }
+
 // MapStreamFn applies a function to each datum element and returns a stream.
-func (c *client) MapStreamFn(ctx context.Context, request *mapstreampb.MapStreamRequest, responseCh chan<- *mapstreampb.MapStreamResponse) error {
-	defer close(responseCh)
-	stream, err := c.grpcClt.MapStreamFn(ctx, request)
+func (c *client) MapStreamFn(ctx context.Context, requests []*mapstreampb.MapStreamRequest, responseCh chan<- *mapstreampb.MapStreamResponse) error {
+	stream, err := c.grpcClt.MapStreamFn(ctx)
 	if err != nil {
-		return fmt.Errorf("failed to execute c.grpcClt.MapStreamFn(): %w", err)
+		return fmt.Errorf("failed to execute c.grpcClt.SinkFn(): %w", err)
+	}
+	for _, datum := range requests {
+		log.Print("MDW: CALLING stream.send ")
+		if err := stream.Send(datum); err != nil {
+			return fmt.Errorf("failed to execute stream.Send(%v): %w", datum, err)
+		}
 	}
 
 	for {
@@ -102,4 +127,27 @@ func (c *client) MapStreamFn(ctx context.Context, request *mapstreampb.MapStream
 			responseCh <- resp
 		}
 	}
+
+	// stream, err := c.grpcClt.MapStreamFn(ctx, request)
+	// if err != nil {
+	// 	return fmt.Errorf("failed to execute c.grpcClt.MapStreamFn(): %w", err)
+	// }
+
+	// for {
+	// 	select {
+	// 	case <-ctx.Done():
+	// 		return ctx.Err()
+	// 	default:
+	// 		var resp *mapstreampb.MapStreamResponse
+	// 		resp, err = stream.Recv()
+	// 		if err == io.EOF {
+	// 			return nil
+	// 		}
+	// 		err = sdkerror.ToUDFErr("c.grpcClt.MapStreamFn", err)
+	// 		if err != nil {
+	// 			return err
+	// 		}
+	// 		responseCh <- resp
+	// 	}
+	// }
 }

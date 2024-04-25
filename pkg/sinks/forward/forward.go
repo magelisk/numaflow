@@ -235,6 +235,7 @@ func (df *DataForward) forwardAChunk(ctx context.Context) {
 	}
 
 	// write the messages to the sink
+	// MDW: Here for writing
 	writeOffsets, fallbackMessages, err := df.writeToSink(ctx, df.sinkWriter, writeMessages, false)
 	// error will not be nil only when we get ctx.Done()
 	if err != nil {
@@ -342,6 +343,7 @@ func (df *DataForward) writeToSink(ctx context.Context, sinkWriter sinker.SinkWr
 	var fallbackMessages []isb.Message
 
 	for {
+		// MDW: Here for write interface
 		_writeOffsets, errs := sinkWriter.Write(ctx, messages)
 		// Note: this is an unwanted memory allocation during a happy path. We want only minimal allocation since using failedMessages is an unlikely path.
 		var failedMessages []isb.Message

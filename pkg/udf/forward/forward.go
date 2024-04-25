@@ -119,9 +119,9 @@ func NewInterStepDataForward(
 	// Add logger from parent ctx to child context.
 	isdf.ctx = logging.WithLogger(ctx, options.logger)
 
-	if isdf.opts.enableMapUdfStream && isdf.opts.readBatchSize != 1 {
-		return nil, fmt.Errorf("batch size is not 1 with map UDF streaming")
-	}
+	// if isdf.opts.enableMapUdfStream && isdf.opts.readBatchSize != 1 {
+	// 	return nil, fmt.Errorf("batch size is not 1 with map UDF streaming")
+	// }
 
 	return &isdf, nil
 }
@@ -417,11 +417,13 @@ func (isdf *InterStepDataForward) streamMessage(
 		writeOffsets[toVertex] = make([][]isb.Offset, len(isdf.toBuffers[toVertex]))
 	}
 
-	if len(dataMessages) > 1 {
-		errMsg := "data message size is not 1 with map UDF streaming"
-		isdf.opts.logger.Errorw(errMsg)
-		return nil, fmt.Errorf(errMsg)
-	} else if len(dataMessages) == 1 {
+	// if len(dataMessages) > 1 {
+	// 	errMsg := "data message size is not 1 with map UDF streaming"
+	// 	isdf.opts.logger.Errorw(errMsg)
+	// 	return nil, fmt.Errorf(errMsg)
+	// } else if len(dataMessages) == 1 {
+
+	if len(dataMessages) > 0 {
 		// send to map UDF only the data messages
 
 		// emit message size metric
@@ -437,7 +439,8 @@ func (isdf *InterStepDataForward) streamMessage(
 		writeMessageCh := make(chan isb.WriteMessage)
 		errs, ctx := errgroup.WithContext(ctx)
 		errs.Go(func() error {
-			return isdf.mapStreamUDF.ApplyMapStream(ctx, dataMessages[0], writeMessageCh)
+			// MDW: Calls the applier interface
+			return isdf.mapStreamUDF.ApplyMapStream(ctx, dataMessages, writeMessageCh)
 		})
 
 		// Stream the message to the next vertex. First figure out which vertex
