@@ -130,8 +130,6 @@ func (u *GRPCBasedMapStream) ApplyMapStream(ctx context.Context, message *isb.Re
 func (u *GRPCBasedMapStream) ApplyMapStreamBatch(ctx context.Context, messages []*isb.ReadMessage, writeMessageCh chan<- isb.WriteMessage) error {
 	defer close(writeMessageCh)
 
-	// errs := make([]error, len(messages))
-
 	globalParentMessageInfo := messages[0].MessageInfo
 	globalOffset := messages[0].ReadOffset
 
@@ -157,8 +155,8 @@ func (u *GRPCBasedMapStream) ApplyMapStreamBatch(ctx context.Context, messages [
 	// responseCh := make(chan *mapstreampb.MapStreamResponseBatch)
 	responseCh := make(chan *mapstreampb.MapStreamResponse)
 
-	errs2, ctx2 := errgroup.WithContext(ctx)
-	errs2.Go(func() error {
+	errs, ctx2 := errgroup.WithContext(ctx)
+	errs.Go(func() error {
 		// Ensure closes so read loop can have an end
 		defer close(responseCh)
 		// log.Printf("MDW: Call MapStreamBatchFn %s", requests)
@@ -179,13 +177,8 @@ func (u *GRPCBasedMapStream) ApplyMapStreamBatch(ctx context.Context, messages [
 	})
 
 	i := 0
-	log.Printf("MDW: START listening to responseCh")
 	for response := range responseCh {
-		log.Printf("MDW: LOOP on responseCh")
 		result := response.GetResult()
-		// for _, result := range results {
-		// result := result.Result
-		i++
 		keys := result.GetKeys()
 		taggedMessage := &isb.WriteMessage{
 			Message: isb.Message{
@@ -200,55 +193,6 @@ func (u *GRPCBasedMapStream) ApplyMapStreamBatch(ctx context.Context, messages [
 			},
 			Tags: result.GetTags(),
 		}
-		log.Printf("MDW: taggedMessage %+v", taggedMessage)
 		writeMessageCh <- *taggedMessage
-		log.Printf("MDW: finished pushing to writeMessageCh")
-		// }
 	}
-	log.Printf("MDW: END with listening to responseCh")
-	return errs2.Wait()
-
-	// --------
-	// if err != nil {
-	// 	for i := range requests {
-	// 		errs[i] = &ApplyUDFErr{
-	// 			UserUDFErr: false,
-	// 			Message:    fmt.Sprintf("gRPC client.MapStreamBatchFn failed, %s", err),
-	// 			InternalErr: InternalErr{
-	// 				Flag:        true,
-	// 				MainCarDown: false,
-	// 			},
-	// 		}
-	// 	}
-	// 	return errs
-	// }
-	// --------
-	// TODO: Capture errors
-
-	// Use ID to map the response messages, so that there's no strict requirement for the user-defined sink to return the response in order.
-	// resMap := make(map[string]*mapstreampb.MapStreamResponseBatch_Result)
-	// for _, res := range response.GetResults() {
-	// 	resMap[res.GetId()] = res
-	// }
-	// for i, m := range requests {
-	// 	if r, existing := resMap[m.GetId()]; !existing {
-	// 		errs[i] = &NotFoundErr
-	// 	} else {
-	// 		if r.GetStatus() == sinkpb.Status_FAILURE {
-	// 			if r.GetErrMsg() != "" {
-	// 				errs[i] = &ApplyUDSinkErr{
-	// 					UserUDSinkErr: true,
-	// 					Message:       r.GetErrMsg(),
-	// 				}
-	// 			} else {
-	// 				errs[i] = &UnknownUDSinkErr
-	// 			}
-	// 		} else if r.GetStatus() == sinkpb.Status_FALLBACK {
-	// 			errs[i] = &WriteToFallbackErr
-	// 		} else {
-	// 			errs[i] = nil
-	// 		}
-	// 	}
-	// }
-	// return errs
-}
+	return errs.Wait()

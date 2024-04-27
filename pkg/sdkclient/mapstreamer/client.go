@@ -26,7 +26,6 @@ import (
 	"google.golang.org/protobuf/types/known/emptypb"
 
 	mapstreampb "github.com/numaproj/numaflow-go/pkg/apis/proto/mapstream/v1"
-	v1 "github.com/numaproj/numaflow-go/pkg/apis/proto/mapstream/v1"
 	"github.com/numaproj/numaflow-go/pkg/info"
 	"github.com/numaproj/numaflow/pkg/sdkclient"
 	sdkerror "github.com/numaproj/numaflow/pkg/sdkclient/error"
@@ -106,25 +105,18 @@ func (c *client) MapStreamFn(ctx context.Context, request *mapstreampb.MapStream
 	}
 }
 
-//	func (c *client) MapStreamBatchFn(ctx context.Context, opts ...grpc.CallOption) (*mapstreampb.MapStream_MapStreamBatchFnClient, error) {
-//		return nil, nil
-//	}
-func (c *client) MapStreamBatchFn(ctx context.Context, requests []*v1.MapStreamRequest, responseCh chan<- *mapstreampb.MapStreamResponse) error {
+func (c *client) MapStreamBatchFn(ctx context.Context, requests []*mapstreampb.MapStreamRequest, responseCh chan<- *mapstreampb.MapStreamResponse) error {
 	stream, err := c.grpcClt.MapStreamBatchFn(ctx)
 	if err != nil {
 		return fmt.Errorf("failed to execute c.grpcClt.MapStreamBatchFn(): %w", err)
 	}
-	log.Printf("MDW: Start stream send of %d messages", len(requests))
-	for idx, datum := range requests {
-		log.Printf("MDW: Send msg # %d (%s)", idx, datum)
+
+	for _, datum := range requests {
 		if err := stream.Send(datum); err != nil {
-			log.Printf("MDW: Error? %s", err)
 			return fmt.Errorf("failed to execute stream.Send(%v): %w", datum, err)
 		}
 	}
-	log.Printf("MDW: client completed sending, call CloseSend")
 	stream.CloseSend()
-	log.Printf("MDW: Now try to receive...")
 
 	for {
 		select {
@@ -132,7 +124,6 @@ func (c *client) MapStreamBatchFn(ctx context.Context, requests []*v1.MapStreamR
 			return ctx.Err()
 		default:
 			var resp *mapstreampb.MapStreamResponse
-			log.Printf("MDW: RECEIVE ONE")
 			resp, err = stream.Recv()
 			if err == io.EOF {
 				log.Printf("MDWX, err: %s", err)
@@ -141,7 +132,6 @@ func (c *client) MapStreamBatchFn(ctx context.Context, requests []*v1.MapStreamR
 			}
 			err = sdkerror.ToUDFErr("c.grpcClt.MapStreamBatchFn", err)
 			if err != nil {
-				log.Printf("MDWY, err: %s", err)
 				return err
 			}
 			responseCh <- resp
