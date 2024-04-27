@@ -20,7 +20,6 @@ import (
 	"context"
 	"fmt"
 	"io"
-	"log"
 
 	"google.golang.org/grpc"
 	"google.golang.org/protobuf/types/known/emptypb"
@@ -126,8 +125,6 @@ func (c *client) MapStreamBatchFn(ctx context.Context, requests []*mapstreampb.M
 			var resp *mapstreampb.MapStreamResponse
 			resp, err = stream.Recv()
 			if err == io.EOF {
-				log.Printf("MDWX, err: %s", err)
-
 				return nil
 			}
 			err = sdkerror.ToUDFErr("c.grpcClt.MapStreamBatchFn", err)

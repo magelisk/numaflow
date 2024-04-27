@@ -19,7 +19,6 @@ package rpc
 import (
 	"context"
 	"fmt"
-	"log"
 	"time"
 
 	mapstreampb "github.com/numaproj/numaflow-go/pkg/apis/proto/mapstream/v1"
@@ -133,8 +132,8 @@ func (u *GRPCBasedMapStream) ApplyMapStreamBatch(ctx context.Context, messages [
 	globalParentMessageInfo := messages[0].MessageInfo
 	globalOffset := messages[0].ReadOffset
 
+	// Format to sending format
 	requests := make([]*mapstreampb.MapStreamRequest, len(messages))
-	log.Printf("MDW: Got %d messages -- %+v", len(messages), messages)
 	for idx, msg := range messages {
 		keys := msg.Keys
 		payload := msg.Body.Payload
@@ -151,16 +150,13 @@ func (u *GRPCBasedMapStream) ApplyMapStreamBatch(ctx context.Context, messages [
 		requests[idx] = d
 	}
 
-	// log.Printf("MDW: Length of requests = %d -- %+v", len(requests), requests)
-	// responseCh := make(chan *mapstreampb.MapStreamResponseBatch)
 	responseCh := make(chan *mapstreampb.MapStreamResponse)
 
-	errs, ctx2 := errgroup.WithContext(ctx)
+	errs, ctx := errgroup.WithContext(ctx)
 	errs.Go(func() error {
 		// Ensure closes so read loop can have an end
 		defer close(responseCh)
-		// log.Printf("MDW: Call MapStreamBatchFn %s", requests)
-		err := u.client.MapStreamBatchFn(ctx2, requests, responseCh)
+		err := u.client.MapStreamBatchFn(ctx, requests, responseCh)
 
 		if err != nil {
 			err = &ApplyUDFErr{
@@ -196,3 +192,4 @@ func (u *GRPCBasedMapStream) ApplyMapStreamBatch(ctx context.Context, messages [
 		writeMessageCh <- *taggedMessage
 	}
 	return errs.Wait()
+}

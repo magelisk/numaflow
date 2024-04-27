@@ -417,14 +417,7 @@ func (isdf *InterStepDataForward) streamMessage(
 		writeOffsets[toVertex] = make([][]isb.Offset, len(isdf.toBuffers[toVertex]))
 	}
 
-	// isdf.opts.logger.Infof("MDW: Got  %d messages", len(dataMessages))
 	if len(dataMessages) >= 1 {
-		// 	errMsg := "data message size is not 1 with map UDF streaming"
-		// 	isdf.opts.logger.Errorw(errMsg)
-		// 	return nil, fmt.Errorf(errMsg)
-		// } else if len(dataMessages) == 1 {
-		// send to map UDF only the data messages
-
 		// emit message size metric
 		metrics.ReadBytesCount.With(map[string]string{metrics.LabelVertex: isdf.vertexName, metrics.LabelPipeline: isdf.pipelineName, metrics.LabelVertexType: string(dfv1.VertexTypeMapUDF), metrics.LabelVertexReplicaIndex: strconv.Itoa(int(isdf.vertexReplica)), metrics.LabelPartitionName: isdf.fromBufferPartition.GetName()}).
 			Add(float64(len(dataMessages[0].Payload)))
@@ -441,10 +434,7 @@ func (isdf *InterStepDataForward) streamMessage(
 			if isdf.opts.readBatchSize == 1 {
 				return isdf.mapStreamUDF.ApplyMapStream(ctx, dataMessages[0], writeMessageCh)
 			} else {
-				// isdf.opts.logger.Warnw("MDW: Sending mulitple streamed messages at once, this is experimental")
-				xx := isdf.mapStreamUDF.ApplyMapStreamBatch(ctx, dataMessages, writeMessageCh)
-				isdf.opts.logger.Infof("MDW: Apply Complete %+v", xx)
-				return xx
+				return isdf.mapStreamUDF.ApplyMapStreamBatch(ctx, dataMessages, writeMessageCh)
 			}
 		})
 
