@@ -159,9 +159,11 @@ func (u *GRPCBasedMapStream) ApplyMapStreamBatch(ctx context.Context, messages [
 
 	errs2, ctx2 := errgroup.WithContext(ctx)
 	errs2.Go(func() error {
+		// Ensure closes so read loop can have an end
+		defer close(responseCh)
 		// log.Printf("MDW: Call MapStreamBatchFn %s", requests)
 		err := u.client.MapStreamBatchFn(ctx2, requests, responseCh)
-		close(responseCh) // close so that the read loop can finish iterating
+
 		if err != nil {
 			err = &ApplyUDFErr{
 				UserUDFErr: false,
