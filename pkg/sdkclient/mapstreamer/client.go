@@ -20,11 +20,13 @@ import (
 	"context"
 	"fmt"
 	"io"
+	"log"
 
 	"google.golang.org/grpc"
 	"google.golang.org/protobuf/types/known/emptypb"
 
 	mapstreampb "github.com/numaproj/numaflow-go/pkg/apis/proto/mapstream/v1"
+	v1 "github.com/numaproj/numaflow-go/pkg/apis/proto/mapstream/v1"
 	"github.com/numaproj/numaflow-go/pkg/info"
 	"github.com/numaproj/numaflow/pkg/sdkclient"
 	sdkerror "github.com/numaproj/numaflow/pkg/sdkclient/error"
@@ -97,6 +99,49 @@ func (c *client) MapStreamFn(ctx context.Context, request *mapstreampb.MapStream
 			}
 			err = sdkerror.ToUDFErr("c.grpcClt.MapStreamFn", err)
 			if err != nil {
+				return err
+			}
+			responseCh <- resp
+		}
+	}
+}
+
+//	func (c *client) MapStreamBatchFn(ctx context.Context, opts ...grpc.CallOption) (*mapstreampb.MapStream_MapStreamBatchFnClient, error) {
+//		return nil, nil
+//	}
+func (c *client) MapStreamBatchFn(ctx context.Context, requests []*v1.MapStreamRequest, responseCh chan<- *mapstreampb.MapStreamResponse) error {
+	stream, err := c.grpcClt.MapStreamBatchFn(ctx)
+	if err != nil {
+		return fmt.Errorf("failed to execute c.grpcClt.MapStreamBatchFn(): %w", err)
+	}
+	log.Printf("MDW: Start stream send of %d messages", len(requests))
+	for idx, datum := range requests {
+		log.Printf("MDW: Send msg # %d (%s)", idx, datum)
+		if err := stream.Send(datum); err != nil {
+			log.Printf("MDW: Error? %s", err)
+			return fmt.Errorf("failed to execute stream.Send(%v): %w", datum, err)
+		}
+	}
+	log.Printf("MDW: client completed sending, call CloseSend")
+	stream.CloseSend()
+	log.Printf("MDW: Now try to receive...")
+
+	for {
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		default:
+			var resp *mapstreampb.MapStreamResponse
+			log.Printf("MDW: RECEIVE ONE")
+			resp, err = stream.Recv()
+			if err == io.EOF {
+				log.Printf("MDWX, err: %s", err)
+
+				return nil
+			}
+			err = sdkerror.ToUDFErr("c.grpcClt.MapStreamBatchFn", err)
+			if err != nil {
+				log.Printf("MDWY, err: %s", err)
 				return err
 			}
 			responseCh <- resp

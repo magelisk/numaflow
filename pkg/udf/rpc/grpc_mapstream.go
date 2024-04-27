@@ -19,6 +19,7 @@ package rpc
 import (
 	"context"
 	"fmt"
+	"log"
 	"time"
 
 	mapstreampb "github.com/numaproj/numaflow-go/pkg/apis/proto/mapstream/v1"
@@ -124,4 +125,128 @@ func (u *GRPCBasedMapStream) ApplyMapStream(ctx context.Context, message *isb.Re
 	}
 
 	return errs.Wait()
+}
+
+func (u *GRPCBasedMapStream) ApplyMapStreamBatch(ctx context.Context, messages []*isb.ReadMessage, writeMessageCh chan<- isb.WriteMessage) error {
+	defer close(writeMessageCh)
+
+	// errs := make([]error, len(messages))
+
+	globalParentMessageInfo := messages[0].MessageInfo
+	globalOffset := messages[0].ReadOffset
+
+	requests := make([]*mapstreampb.MapStreamRequest, len(messages))
+	log.Printf("MDW: Got %d messages -- %+v", len(messages), messages)
+	for idx, msg := range messages {
+		keys := msg.Keys
+		payload := msg.Body.Payload
+		// offset := msg.ReadOffset
+		parentMessageInfo := msg.MessageInfo
+
+		var d = &mapstreampb.MapStreamRequest{
+			Keys:      keys,
+			Value:     payload,
+			EventTime: timestamppb.New(parentMessageInfo.EventTime),
+			Watermark: timestamppb.New(msg.Watermark),
+			Headers:   msg.Headers,
+		}
+		requests[idx] = d
+	}
+
+	// log.Printf("MDW: Length of requests = %d -- %+v", len(requests), requests)
+	// responseCh := make(chan *mapstreampb.MapStreamResponseBatch)
+	responseCh := make(chan *mapstreampb.MapStreamResponse)
+
+	errs2, ctx2 := errgroup.WithContext(ctx)
+	errs2.Go(func() error {
+		// log.Printf("MDW: Call MapStreamBatchFn %s", requests)
+		err := u.client.MapStreamBatchFn(ctx2, requests, responseCh)
+		close(responseCh) // close so that the read loop can finish iterating
+		if err != nil {
+			err = &ApplyUDFErr{
+				UserUDFErr: false,
+				Message:    fmt.Sprintf("gRPC client.ApplyMapStreamBatch failed, %s", err),
+				InternalErr: InternalErr{
+					Flag:        true,
+					MainCarDown: false,
+				},
+			}
+			return err
+		}
+		return nil
+	})
+
+	i := 0
+	log.Printf("MDW: START listening to responseCh")
+	for response := range responseCh {
+		log.Printf("MDW: LOOP on responseCh")
+		result := response.GetResult()
+		// for _, result := range results {
+		// result := result.Result
+		i++
+		keys := result.GetKeys()
+		taggedMessage := &isb.WriteMessage{
+			Message: isb.Message{
+				Header: isb.Header{
+					MessageInfo: globalParentMessageInfo,
+					ID:          fmt.Sprintf("%s-%d", globalOffset.String(), i),
+					Keys:        keys,
+				},
+				Body: isb.Body{
+					Payload: result.GetValue(),
+				},
+			},
+			Tags: result.GetTags(),
+		}
+		log.Printf("MDW: taggedMessage %+v", taggedMessage)
+		writeMessageCh <- *taggedMessage
+		log.Printf("MDW: finished pushing to writeMessageCh")
+		// }
+	}
+	log.Printf("MDW: END with listening to responseCh")
+	return errs2.Wait()
+
+	// --------
+	// if err != nil {
+	// 	for i := range requests {
+	// 		errs[i] = &ApplyUDFErr{
+	// 			UserUDFErr: false,
+	// 			Message:    fmt.Sprintf("gRPC client.MapStreamBatchFn failed, %s", err),
+	// 			InternalErr: InternalErr{
+	// 				Flag:        true,
+	// 				MainCarDown: false,
+	// 			},
+	// 		}
+	// 	}
+	// 	return errs
+	// }
+	// --------
+	// TODO: Capture errors
+
+	// Use ID to map the response messages, so that there's no strict requirement for the user-defined sink to return the response in order.
+	// resMap := make(map[string]*mapstreampb.MapStreamResponseBatch_Result)
+	// for _, res := range response.GetResults() {
+	// 	resMap[res.GetId()] = res
+	// }
+	// for i, m := range requests {
+	// 	if r, existing := resMap[m.GetId()]; !existing {
+	// 		errs[i] = &NotFoundErr
+	// 	} else {
+	// 		if r.GetStatus() == sinkpb.Status_FAILURE {
+	// 			if r.GetErrMsg() != "" {
+	// 				errs[i] = &ApplyUDSinkErr{
+	// 					UserUDSinkErr: true,
+	// 					Message:       r.GetErrMsg(),
+	// 				}
+	// 			} else {
+	// 				errs[i] = &UnknownUDSinkErr
+	// 			}
+	// 		} else if r.GetStatus() == sinkpb.Status_FALLBACK {
+	// 			errs[i] = &WriteToFallbackErr
+	// 		} else {
+	// 			errs[i] = nil
+	// 		}
+	// 	}
+	// }
+	// return errs
 }
