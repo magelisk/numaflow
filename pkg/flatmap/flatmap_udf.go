@@ -215,9 +215,10 @@ func (u *FlatMapUDFProcessor) Start(ctx context.Context) error {
 				opts = append(opts, forward.WithUDFConcurrency(int(*x.ReadBatchSize)))
 			}
 		}
+
 		// create a forwarder for each partition
 		// TODO(stream): refactor the interface based on the batch handler etc
-		df, err := forward.NewInterStepDataForward(u.VertexInstance, readers[index], writers, conditionalForwarder, flatmapHandler, nil, fetchWatermark, publishWatermark, idleManager, opts...)
+		df, err := forward.NewInterStepDataForward(u.VertexInstance, readers[index], writers, conditionalForwarder, flatmapHandler, nil, fetchWatermark, publishWatermark, idleManager, conditionalForwarder, opts...)
 		if err != nil {
 			return err
 		}

@@ -57,5 +57,9 @@ func (t *Tracker) GetIdx(id string) (int, bool) {
 		return -1, ok
 	}
 	return idx.(int), ok
+}
 
+func (t *Tracker) RemoveRequest(id string) {
+	t.requestMap.Delete(id)
+	t.responseIdx.Delete(id)
 }

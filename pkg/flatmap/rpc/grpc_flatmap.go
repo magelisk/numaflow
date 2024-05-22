@@ -2,7 +2,6 @@ package rpc
 
 import (
 	"fmt"
-	"log"
 	"time"
 
 	flatmappb "github.com/numaproj/numaflow-go/pkg/apis/proto/flatmap/v1"
@@ -66,7 +65,7 @@ func (u *GRPCBasedFlatmap) ApplyMap(ctx context.Context, messageStream <-chan *i
 	// invoke the MapFn method with mapRequestCh channel and send the result to responseCh channel
 	// and any error to errCh channel
 	go func() {
-		log.Println("MYDEBUG: I'm processing here")
+		//log.Println("MYDEBUG: I'm processing here")
 		index := 0
 		resultCh, mapErrCh := u.client.MapFn(ctx, mapRequestCh)
 		for {
@@ -81,10 +80,17 @@ func (u *GRPCBasedFlatmap) ApplyMap(ctx context.Context, messageStream <-chan *i
 				}
 				// create a unique message id for each response message which will be used for deduplication
 				index++
-				responseCh <- u.parseMapResponse(result)
+
 				// TODO(stream): We need to remove the request message from the tracker once this is completed.
 				// As we are streaming messages, we need to have some control field to indicate that this is completed
 				// now, we can do that in the SDK itself.
+				resp, remove := u.parseMapResponse(result)
+				if remove {
+					u.tracker.RemoveRequest(result.Result.GetUuid())
+
+				} else if resp != nil {
+					responseCh <- resp
+				}
 
 			case err := <-mapErrCh:
 				// TODO(stream): Check error handling here
@@ -110,7 +116,7 @@ func (u *GRPCBasedFlatmap) ApplyMap(ctx context.Context, messageStream <-chan *i
 		for {
 			select {
 			case msg, ok := <-messageStream:
-				log.Println("MYDEBUG: reading for messages here")
+				//log.Println("MYDEBUG: reading for messages here")
 				// if the requestsStream is closed or if the message is nil, return
 				if !ok || msg == nil {
 					//return
@@ -121,7 +127,7 @@ func (u *GRPCBasedFlatmap) ApplyMap(ctx context.Context, messageStream <-chan *i
 				select {
 				// TODO(stream): Check the context end here
 				case mapRequestCh <- d:
-					log.Println("MYDEBUG: send the message here", d.Uuid)
+					//log.Println("MYDEBUG: send the message here", d.Uuid)
 					//case <-ctx.Done():
 					//	return
 				}
@@ -153,13 +159,18 @@ func (u *GRPCBasedFlatmap) createFlatmapRequest(msg *isb.ReadMessage) *flatmappb
 	return d
 }
 
-func (u *GRPCBasedFlatmap) parseMapResponse(resp *flatmappb.MapResponse) *types.ResponseFlatmap {
+func (u *GRPCBasedFlatmap) parseMapResponse(resp *flatmappb.MapResponse) (parsedResp *types.ResponseFlatmap, requestDone bool) {
 	result := resp.Result
+	eor := result.GetEOR()
 	uid := result.GetUuid()
 	parentRequest, ok := u.tracker.GetRequest(uid)
 	// TODO(stream): check what should be path for !ok
 	if !ok {
 
+	}
+	// Request has completed remove from the tracker module
+	if eor == true {
+		return nil, true
 	}
 	idx, present := u.tracker.GetIdx(uid)
 	if !present {
@@ -182,9 +193,10 @@ func (u *GRPCBasedFlatmap) parseMapResponse(resp *flatmappb.MapResponse) *types.
 		},
 		Tags: result.GetTags(),
 	}
+	u.tracker.IncrementRespIdx(uid)
 	return &types.ResponseFlatmap{
 		ParentMessage: parentRequest,
 		Uid:           uid,
 		RespMessage:   taggedMessage,
-	}
+	}, false
 }
