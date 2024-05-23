@@ -185,11 +185,14 @@ func (isdf *InterStepDataForward) readData() (<-chan *isb.ReadMessage, chan stru
 	return inputMessages, stopChan
 }
 
-func (isdf *InterStepDataForward) processRoutine(inputMessageChan <-chan *types.ResponseFlatmap, writeChan chan<- *types.WriteMsgFlatmap) {
+func (isdf *InterStepDataForward) processRoutine(ctx context.Context, inputMessageChan <-chan *types.ResponseFlatmap, writeChan chan<- *types.WriteMsgFlatmap) {
+	defer close(writeChan)
 	idx := 0
 	for msg := range inputMessageChan {
 		//logger.Info("MYDEBUG: Let's send to resp Chan here")
 		select {
+		case <-ctx.Done():
+			return
 		// TODO(stream): add error handling and shutdown here
 		default:
 			idx += 1
@@ -268,15 +271,16 @@ func (isdf *InterStepDataForward) processUdf(inputMessageChan <-chan *isb.ReadMe
 
 	// create a channel which would be passed to the next buffers for writing,
 	// errors in messages/no-acks will be propagated from this as well
-	go func() {
-		defer close(writeChan)
-		group := sync.WaitGroup{}
-		for i := 0; i < 50; i++ {
-			group.Add(1)
-			go isdf.processRoutine(udfRespChan, writeChan)
-		}
-		group.Wait()
-	}()
+	go isdf.processRoutine(ctx, udfRespChan, writeChan)
+	//go func() {
+	//	defer close(writeChan)
+	//	group := sync.WaitGroup{}
+	//	for i := 0; i < 50; i++ {
+	//		group.Add(1)
+	//		go isdf.processRoutine(udfRespChan, writeChan)
+	//	}
+	//	group.Wait()
+	//}()
 	//
 	//go func() {
 	//	defer close(writeChan)

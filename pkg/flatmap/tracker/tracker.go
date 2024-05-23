@@ -28,7 +28,7 @@ func GetNewId() string {
 
 func (t *Tracker) AddRequest(msg *isb.ReadMessage) string {
 	id := GetNewId()
-	//t.requestMap.Store(id, msg)
+	t.requestMap.Store(id, msg)
 	return id
 }
 
@@ -61,5 +61,5 @@ func (t *Tracker) GetIdx(id string) (int, bool) {
 
 func (t *Tracker) RemoveRequest(id string) {
 	t.requestMap.Delete(id)
-	t.responseIdx.Delete(id)
+	//t.responseIdx.Delete(id)
 }

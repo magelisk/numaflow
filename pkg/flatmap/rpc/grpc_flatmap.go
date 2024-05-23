@@ -88,7 +88,7 @@ func (u *GRPCBasedFlatmap) ApplyMap(ctx context.Context, messageStream <-chan *i
 				// now, we can do that in the SDK itself.
 				resp, remove := u.ParseMapResponse(result)
 				if remove {
-					//u.tracker.RemoveRequest(result.Result.GetUuid())
+					u.tracker.RemoveRequest(result.Result.GetUuid())
 
 				} else if resp != nil {
 					responseCh <- resp
