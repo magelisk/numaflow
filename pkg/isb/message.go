@@ -82,6 +82,7 @@ type Body struct {
 type Message struct {
 	Header
 	Body
+	ReadOffset Offset
 }
 
 // ReadMessage is the message read from the buffer.

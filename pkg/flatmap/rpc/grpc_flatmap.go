@@ -19,12 +19,14 @@ import (
 // GRPCBasedFlatmap is a flat map applier that uses gRPC client to invoke the flat map UDF.
 // It implements the applier.FlatmapApplier interface.
 type GRPCBasedFlatmap struct {
-	client  flatmapper.Client
-	tracker *tracker.Tracker
+	client        flatmapper.Client
+	tracker       *tracker.Tracker
+	readBatchSize int
+	idx           int
 }
 
-func NewUDSgRPCBasedFlatmap(client flatmapper.Client) *GRPCBasedFlatmap {
-	return &GRPCBasedFlatmap{client: client, tracker: tracker.NewTracker()}
+func NewUDSgRPCBasedFlatmap(client flatmapper.Client, batchSize int) *GRPCBasedFlatmap {
+	return &GRPCBasedFlatmap{client: client, tracker: tracker.NewTracker(), readBatchSize: batchSize}
 }
 
 // IsHealthy checks if the map udf is healthy.
@@ -58,8 +60,8 @@ func (u *GRPCBasedFlatmap) WaitUntilReady(ctx context.Context) error {
 func (u *GRPCBasedFlatmap) ApplyMap(ctx context.Context, messageStream <-chan *isb.ReadMessage) (<-chan *types.ResponseFlatmap, <-chan error) {
 	var (
 		errCh        = make(chan error)
-		responseCh   = make(chan *types.ResponseFlatmap)
-		mapRequestCh = make(chan *flatmappb.MapRequest)
+		responseCh   = make(chan *types.ResponseFlatmap, u.readBatchSize)
+		mapRequestCh = make(chan *flatmappb.MapRequest, u.readBatchSize)
 	)
 
 	// invoke the MapFn method with mapRequestCh channel and send the result to responseCh channel
@@ -84,9 +86,9 @@ func (u *GRPCBasedFlatmap) ApplyMap(ctx context.Context, messageStream <-chan *i
 				// TODO(stream): We need to remove the request message from the tracker once this is completed.
 				// As we are streaming messages, we need to have some control field to indicate that this is completed
 				// now, we can do that in the SDK itself.
-				resp, remove := u.parseMapResponse(result)
+				resp, remove := u.ParseMapResponse(result)
 				if remove {
-					u.tracker.RemoveRequest(result.Result.GetUuid())
+					//u.tracker.RemoveRequest(result.Result.GetUuid())
 
 				} else if resp != nil {
 					responseCh <- resp
@@ -159,7 +161,7 @@ func (u *GRPCBasedFlatmap) createFlatmapRequest(msg *isb.ReadMessage) *flatmappb
 	return d
 }
 
-func (u *GRPCBasedFlatmap) parseMapResponse(resp *flatmappb.MapResponse) (parsedResp *types.ResponseFlatmap, requestDone bool) {
+func (u *GRPCBasedFlatmap) ParseMapResponse(resp *flatmappb.MapResponse) (parsedResp *types.ResponseFlatmap, requestDone bool) {
 	result := resp.Result
 	eor := result.GetEOR()
 	uid := result.GetUuid()
@@ -172,11 +174,11 @@ func (u *GRPCBasedFlatmap) parseMapResponse(resp *flatmappb.MapResponse) (parsed
 	if eor == true {
 		return nil, true
 	}
-	idx, present := u.tracker.GetIdx(uid)
-	if !present {
-		u.tracker.NewResponse(uid)
-		idx = 1
-	}
+	//idx, present := u.tracker.GetIdx(uid)
+	//if !present {
+	//	u.tracker.NewResponse(uid)
+	//	idx = 1
+	//}
 	keys := result.GetKeys()
 	taggedMessage := &isb.WriteMessage{
 		Message: isb.Message{
@@ -184,7 +186,7 @@ func (u *GRPCBasedFlatmap) parseMapResponse(resp *flatmappb.MapResponse) (parsed
 				MessageInfo: parentRequest.MessageInfo,
 				// TODO(stream): Check what will be the unique ID to use here
 				//msgId := fmt.Sprintf("%s-%d-%s-%d", u.vertexName, u.vertexReplica, partitionID.String(), index)
-				ID:   fmt.Sprintf("%s-%d", parentRequest.ReadOffset.String(), idx),
+				ID:   fmt.Sprintf("%s-%d", parentRequest.ReadOffset.String(), u.idx),
 				Keys: keys,
 			},
 			Body: isb.Body{
@@ -193,7 +195,8 @@ func (u *GRPCBasedFlatmap) parseMapResponse(resp *flatmappb.MapResponse) (parsed
 		},
 		Tags: result.GetTags(),
 	}
-	u.tracker.IncrementRespIdx(uid)
+	u.idx += 1
+	//u.tracker.IncrementRespIdx(uid)
 	return &types.ResponseFlatmap{
 		ParentMessage: parentRequest,
 		Uid:           uid,

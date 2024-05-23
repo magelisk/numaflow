@@ -135,7 +135,7 @@ func NewInterStepDataForward(
 // Error condition: If there is an error while reading, keep trying
 // Shutdown flow: On receiving a done signal, we stop the reading process, close the inputMessages channel and return
 func (isdf *InterStepDataForward) readData() (<-chan *isb.ReadMessage, chan struct{}) {
-	log := isdf.opts.logger
+	//log := isdf.opts.logger
 
 	// inputMessages is the channel on which the data read from the ISB will be written and then
 	// this channel will be consumed by the producer.
@@ -168,14 +168,15 @@ func (isdf *InterStepDataForward) readData() (<-chan *isb.ReadMessage, chan stru
 				// at-least-once semantics for reading, during restart we will have to reprocess all unacknowledged messages. It is the
 				// responsibility of the Read function to do that.
 				readMessages, err := isdf.fromBufferPartition.Read(ctx, isdf.opts.readBatchSize)
-				isdf.opts.logger.Debugw("Read from buffer", zap.String("bufferFrom", isdf.fromBufferPartition.GetName()), zap.Int64("length", int64(len(readMessages))))
+				//isdf.opts.logger.Debugw("Read from buffer", zap.String("bufferFrom", isdf.fromBufferPartition.GetName()), zap.Int64("length", int64(len(readMessages))))
 				if err != nil {
 					isdf.opts.logger.Warnw("failed to read fromBufferPartition", zap.Error(err))
 					metrics.ReadMessagesError.With(map[string]string{metrics.LabelVertex: isdf.vertexName, metrics.LabelPipeline: isdf.pipelineName, metrics.LabelVertexType: string(dfv1.VertexTypeMapUDF), metrics.LabelVertexReplicaIndex: strconv.Itoa(int(isdf.vertexReplica)), metrics.LabelPartitionName: isdf.fromBufferPartition.GetName()}).Inc()
 				}
+				//inputMessages <- readMessages
 				// Keep streaming the messages read to the inputMessages channel
 				for _, msg := range readMessages {
-					log.Info("MYDEBUG: streaming in read function ", msg.ReadOffset.String(), " ", time.Now().UnixNano())
+					//log.Info("MYDEBUG: streaming in read function ", msg.ReadOffset.String(), " ", time.Now().UnixNano())
 					inputMessages <- msg
 				}
 			}
@@ -184,12 +185,47 @@ func (isdf *InterStepDataForward) readData() (<-chan *isb.ReadMessage, chan stru
 	return inputMessages, stopChan
 }
 
+func (isdf *InterStepDataForward) processRoutine(inputMessageChan <-chan *types.ResponseFlatmap, writeChan chan<- *types.WriteMsgFlatmap) {
+	idx := 0
+	for msg := range inputMessageChan {
+		//logger.Info("MYDEBUG: Let's send to resp Chan here")
+		select {
+		// TODO(stream): add error handling and shutdown here
+		default:
+			idx += 1
+			//d := isdf.flatmapUDF.ParseMapResponse(msg)
+			//taggedMessage := &isb.WriteMessage{
+			//	Message: isb.Message{
+			//		Header: isb.Header{
+			//			MessageInfo: msg.ParentMessage.MessageInfo,
+			//			// TODO(stream): Check what will be the unique ID to use here
+			//			//msgId := fmt.Sprintf("%s-%d-%s-%d", u.vertexName, u.vertexReplica, partitionID.String(), index)
+			//			ID:   fmt.Sprintf("%s-%d", msg.ParentMessage.ReadOffset.String(), idx),
+			//			Keys: msg.RespMessage.Keys,
+			//		},
+			//		Body: isb.Body{
+			//			Payload: msg.RespMessage.Payload,
+			//		},
+			//	},
+			//	Tags: msg.RespMessage.Tags,
+			//}
+			f := &types.WriteMsgFlatmap{
+				Message: msg,
+				AckIt:   true,
+			}
+			//d := isdf.processWriteMessage(f, true)
+			//logger.Info("MYDEBUG: Sending to write ", msg.ParentMessage.ReadOffset.String(), " ", time.Now().UnixNano())
+			//logger.Info("MYDEBUG: Sending to write", string(msg.RespMessage.Payload), "Sending to write", msg.Uid)
+			writeChan <- f
+		}
+	}
+}
 func (isdf *InterStepDataForward) processUdf(inputMessageChan <-chan *isb.ReadMessage) <-chan *types.WriteMsgFlatmap {
 	ctx := isdf.ctx
 	// process only if we have any read messages. There is a natural looping here if there is an internal error while
 	// reading, and we are not able to proceed.
 
-	logger := isdf.opts.logger
+	//logger := isdf.opts.logger
 	// TODO(stream) : enable idle watermark publishing
 
 	//if len(readMessages) == 0 {
@@ -228,25 +264,60 @@ func (isdf *InterStepDataForward) processUdf(inputMessageChan <-chan *isb.ReadMe
 	if err != nil {
 
 	}
-	writeChan := make(chan *types.WriteMsgFlatmap)
+	writeChan := make(chan *types.WriteMsgFlatmap, isdf.opts.readBatchSize)
 
 	// create a channel which would be passed to the next buffers for writing,
 	// errors in messages/no-acks will be propagated from this as well
-
 	go func() {
 		defer close(writeChan)
-		for msg := range udfRespChan {
-			//logger.Info("MYDEBUG: Let's send to resp Chan here")
-			select {
-			// TODO(stream): add error handling and shutdown here
-			default:
-				d := isdf.processWriteMessage(msg, true)
-				logger.Info("MYDEBUG: Sending to write ", msg.ParentMessage.ReadOffset.String(), " ", time.Now().UnixNano())
-				//logger.Info("MYDEBUG: Sending to write", string(msg.RespMessage.Payload), "Sending to write", msg.Uid)
-				writeChan <- d
-			}
+		group := sync.WaitGroup{}
+		for i := 0; i < 50; i++ {
+			group.Add(1)
+			go isdf.processRoutine(udfRespChan, writeChan)
 		}
+		group.Wait()
 	}()
+	//
+	//go func() {
+	//	defer close(writeChan)
+	//	idx := 0
+	//	for msg := range udfRespChan {
+	//		//logger.Info("MYDEBUG: Let's send to resp Chan here")
+	//		select {
+	//		// TODO(stream): add error handling and shutdown here
+	//		default:
+	//			idx += 1
+	//			//d := isdf.flatmapUDF.ParseMapResponse()
+	//			taggedMessage := &isb.WriteMessage{
+	//				Message: isb.Message{
+	//					Header: isb.Header{
+	//						MessageInfo: msg.MessageInfo,
+	//						// TODO(stream): Check what will be the unique ID to use here
+	//						//msgId := fmt.Sprintf("%s-%d-%s-%d", u.vertexName, u.vertexReplica, partitionID.String(), index)
+	//						ID:   fmt.Sprintf("%s-%d", msg.ReadOffset.String(), idx),
+	//						Keys: msg.Keys,
+	//					},
+	//					Body: isb.Body{
+	//						Payload: msg.Payload,
+	//					},
+	//				},
+	//				Tags: msg.Keys,
+	//			}
+	//			f := &types.WriteMsgFlatmap{
+	//				Message: &types.ResponseFlatmap{
+	//					ParentMessage: msg,
+	//					Uid:           "",
+	//					RespMessage:   taggedMessage,
+	//				},
+	//				AckIt: false,
+	//			}
+	//			//d := isdf.processWriteMessage(f, true)
+	//			//logger.Info("MYDEBUG: Sending to write ", msg.ParentMessage.ReadOffset.String(), " ", time.Now().UnixNano())
+	//			//logger.Info("MYDEBUG: Sending to write", string(msg.RespMessage.Payload), "Sending to write", msg.Uid)
+	//			writeChan <- f
+	//		}
+	//	}
+	//}()
 	return writeChan
 }
 
@@ -313,287 +384,433 @@ type readWriteMessagePair struct {
 	udfError      error
 }
 
-func (isdf *InterStepDataForward) writeRoutine(ctx context.Context, writeMessageCh <-chan *types.WriteMsgFlatmap, ackChan chan<- *types.AckMsgFlatmap) {
-	flushTimer := time.NewTicker(isdf.opts.flushDuration)
-	writeMessages := make([]*isb.WriteMessage, 0, isdf.opts.batchSize)
-	readOffsets := make([]*isb.ReadMessage, 0, isdf.opts.batchSize)
-	logger := isdf.opts.logger
+//
+//func (isdf *InterStepDataForward) writeRoutine(ctx context.Context, writeMessageCh <-chan *isb.ReadMessage, ackChan chan<- *isb.ReadMessage, wg *sync.WaitGroup) {
+//	defer wg.Done()
+//	//flushTimer := time.NewTicker(3 * isdf.opts.flushDuration)
+//	writeMessages := make([]*isb.WriteMessage, 0, isdf.opts.readBatchSize)
+//	readOffsets := make([]*isb.ReadMessage, 0, isdf.opts.readBatchSize)
+//	logger := isdf.opts.logger
+//
+//	// should we flush?
+//	var flush bool
+//	//logger.Info("MYDEBUG: I'm writing to buffer here")
+//
+//	// error != nil only when the context is closed, so we can safely return (our write loop will try indefinitely
+//	// unless ctx.Done() happens)
+//	flush = true
+//	idx := 0
+//	logger.Info("MYDEBUG: LATEST WRITE ROUTINE")
+//forwardLoop:
+//	for {
+//		select {
+//		case msg, ok := <-writeMessageCh:
+//			if !ok {
+//				// TODO(stream): check the error logic here
+//				break forwardLoop
+//			}
+//			//if !response.AckIt {
+//			//	// TODO(stream): if no ack directly set let's short circuit?
+//			//}
+//
+//			idx += 1
+//			taggedMessage := &isb.WriteMessage{
+//				Message: isb.Message{
+//					Header: isb.Header{
+//						MessageInfo: msg.MessageInfo,
+//						// TODO(stream): Check what will be the unique ID to use here
+//						//msgId := fmt.Sprintf("%s-%d-%s-%d", u.vertexName, u.vertexReplica, partitionID.String(), index)
+//						ID:   fmt.Sprintf("%s-%d", msg.ReadOffset.String(), idx),
+//						Keys: msg.Keys,
+//					},
+//					Body: isb.Body{
+//						Payload: msg.Payload,
+//					},
+//				},
+//				Tags: msg.Keys,
+//			}
+//			//f := &types.WriteMsgFlatmap{
+//			//	Message: &types.ResponseFlatmap{
+//			//		ParentMessage: msg,
+//			//		Uid:           "",
+//			//		RespMessage:   taggedMessage,
+//			//	},
+//			//	AckIt: true,
+//			//}
+//
+//			writeMessages = append(writeMessages, taggedMessage)
+//			readOffsets = append(readOffsets, msg)
+//
+//			// append the write message to the array
+//
+//			// if the batch size is reached, let's flush
+//			if len(writeMessages) >= int(isdf.opts.readBatchSize) {
+//				flush = true
+//			}
+//
+//			//case <-flushTimer.C:
+//			//	// if there are no messages to write, continue
+//			//	if len(writeMessages) == 0 {
+//			//		continue
+//			//	}
+//			//
+//			//	// Since flushTimer is triggered, it is time to flush
+//			//	flush = true
+//		}
+//
+//		if flush {
+//			logger.Info("MYDEBUG: NO WRITE ROUTINE", len(writeMessages))
+//			if err := isdf.forwardToBuffers(ctx, &writeMessages); err != nil {
+//				// TODO(stream): mark as no ack directly or retry
+//			}
+//			for _, r := range readOffsets {
+//				ackChan <- r
+//			}
+//			idx = 0
+//			//ackChan <- readOffsets
+//
+//			//for _, offset := range readOffsets {
+//			//	logger.Info("MYDEBUG: Sending to ack ", offset.ReadOffset.String(), " ", time.Now().UnixNano())
+//			//	//logger.Info("MYDEBUG: STEP 1 at ACKING ", offset.ReadOffset)
+//			//	ackChan <- &types.AckMsgFlatmap{
+//			//		Message: offset,
+//			//		// TODO(stream): should we write for no-ack?
+//			//		AckIt: true,
+//			//	}
+//			//}
+//			// clear the writeMessages
+//			writeMessages = make([]*isb.WriteMessage, 0, isdf.opts.readBatchSize)
+//			readOffsets = make([]*isb.ReadMessage, 0, isdf.opts.readBatchSize)
+//			flush = false
+//		}
+//	}
+//
+//	// if there are any messages left, forward them to the ISB
+//	if len(writeMessages) > 0 {
+//		if err := isdf.forwardToBuffers(ctx, &writeMessages); err != nil {
+//			// TODO(stream): mark as no ack directly or retry
+//		}
+//		for _, r := range readOffsets {
+//			ackChan <- r
+//		}
+//		//for _, offset := range readOffsets {
+//		//	//logger.Info("MYDEBUG: STEP 1 at ACKING ", offset.ReadOffset)
+//		//	ackChan <- &types.AckMsgFlatmap{
+//		//		Message: offset,
+//		//		// TODO(stream): should we write for no-ack?
+//		//		AckIt: true,
+//		//	}
+//		//}
+//		// clear the writeMessages
+//		writeMessages = make([]*isb.WriteMessage, 0, isdf.opts.readBatchSize)
+//		readOffsets = make([]*isb.ReadMessage, 0, isdf.opts.readBatchSize)
+//		flush = false
+//	}
+//}
 
-	// should we flush?
-	var flush bool
-	//logger.Info("MYDEBUG: I'm writing to buffer here")
-
-	// error != nil only when the context is closed, so we can safely return (our write loop will try indefinitely
-	// unless ctx.Done() happens)
-	flush = true
-forwardLoop:
-	for {
-		select {
-		case response, ok := <-writeMessageCh:
-			if !ok {
-				// TODO(stream): check the error logic here
-				break forwardLoop
-			}
-			if !response.AckIt {
-				// TODO(stream): if no ack directly set let's short circuit?
-			}
-
-			// append the write message to the array
-			writeMessages = append(writeMessages, response.Message.RespMessage)
-			readOffsets = append(readOffsets, response.Message.ParentMessage)
-
-			// if the batch size is reached, let's flush
-			if len(writeMessages) >= isdf.opts.batchSize {
-				flush = true
-			}
-
-		case <-flushTimer.C:
-			// if there are no messages to write, continue
-			if len(writeMessages) == 0 {
-				continue
-			}
-
-			// Since flushTimer is triggered, it is time to flush
-			flush = true
-		}
-
-		if flush {
-			if err := isdf.forwardToBuffers(ctx, &writeMessages); err != nil {
-				// TODO(stream): mark as no ack directly or retry
-			}
-
-			for _, offset := range readOffsets {
-				logger.Info("MYDEBUG: Sending to ack ", offset.ReadOffset.String(), " ", time.Now().UnixNano())
-				//logger.Info("MYDEBUG: STEP 1 at ACKING ", offset.ReadOffset)
-				ackChan <- &types.AckMsgFlatmap{
-					Message: offset,
-					// TODO(stream): should we write for no-ack?
-					AckIt: true,
-				}
-			}
-			// clear the writeMessages
-			writeMessages = make([]*isb.WriteMessage, 0, isdf.opts.batchSize)
-			readOffsets = make([]*isb.ReadMessage, 0, isdf.opts.batchSize)
-			//flush = false
-		}
-	}
-
-	// if there are any messages left, forward them to the ISB
-	if len(writeMessages) > 0 {
-		if err := isdf.forwardToBuffers(ctx, &writeMessages); err != nil {
-			// TODO(stream): mark as no ack directly or retry
-		}
-		for _, offset := range readOffsets {
-			//logger.Info("MYDEBUG: STEP 1 at ACKING ", offset.ReadOffset)
-			ackChan <- &types.AckMsgFlatmap{
-				Message: offset,
-				// TODO(stream): should we write for no-ack?
-				AckIt: true,
-			}
-		}
-		// clear the writeMessages
-		writeMessages = make([]*isb.WriteMessage, 0, isdf.opts.batchSize)
-		readOffsets = make([]*isb.ReadMessage, 0, isdf.opts.batchSize)
-		//flush = false
-	}
-}
-
-func (isdf *InterStepDataForward) writeAhead(writeMessageCh <-chan *types.WriteMsgFlatmap) <-chan *types.AckMsgFlatmap {
+func (isdf *InterStepDataForward) writeAheadNew(writeMessageCh <-chan *types.WriteMsgFlatmap) <-chan *isb.ReadMessage {
 	// TODO(stream): check buffered channel size
 	//logger := isdf.opts.logger
-	ackChan := make(chan *types.AckMsgFlatmap)
+	ackChan := make(chan *isb.ReadMessage, isdf.opts.readBatchSize)
 	ctx := isdf.ctx
 
 	go func() {
 		defer close(ackChan)
 		group := sync.WaitGroup{}
-		for i := 0; i < isdf.opts.batchSize; i++ {
+		for i := 0; i < 4*int(isdf.opts.readBatchSize); i++ {
 			group.Add(1)
-			go isdf.writeRoutine(ctx, writeMessageCh, ackChan)
+			go isdf.writeRoutineNew(ctx, writeMessageCh, ackChan, &group)
 		}
 		group.Wait()
 	}()
 	return ackChan
-
-	//go func() {
-	//	defer close(ackChan)
-	//	flushTimer := time.NewTicker(isdf.opts.flushDuration)
-	//	writeMessages := make([]*isb.WriteMessage, 0, isdf.opts.batchSize)
-	//	readOffsets := make([]*isb.ReadMessage, 0, isdf.opts.batchSize)
-	//
-	//	// should we flush?
-	//	var flush bool
-	//	//logger.Info("MYDEBUG: I'm writing to buffer here")
-	//
-	//	// error != nil only when the context is closed, so we can safely return (our write loop will try indefinitely
-	//	// unless ctx.Done() happens)
-	//	flush = true
-	//forwardLoop:
-	//	for {
-	//		select {
-	//		case response, ok := <-writeMessageCh:
-	//			if !ok {
-	//				// TODO(stream): check the error logic here
-	//				break forwardLoop
-	//			}
-	//			if !response.AckIt {
-	//				// TODO(stream): if no ack directly set let's short circuit?
-	//			}
-	//
-	//			// append the write message to the array
-	//			writeMessages = append(writeMessages, response.Message.RespMessage)
-	//			readOffsets = append(readOffsets, response.Message.ParentMessage)
-	//
-	//			// if the batch size is reached, let's flush
-	//			if len(writeMessages) >= isdf.opts.batchSize {
-	//				flush = true
-	//			}
-	//
-	//		case <-flushTimer.C:
-	//			// if there are no messages to write, continue
-	//			if len(writeMessages) == 0 {
-	//				continue
-	//			}
-	//
-	//			// Since flushTimer is triggered, it is time to flush
-	//			flush = true
-	//		}
-	//
-	//		if flush {
-	//			if err := isdf.forwardToBuffers(ctx, &writeMessages); err != nil {
-	//				// TODO(stream): mark as no ack directly or retry
-	//			}
-	//
-	//			for _, offset := range readOffsets {
-	//				logger.Info("MYDEBUG: Sending to ack ", offset.ReadOffset.String(), " ", time.Now().UnixNano())
-	//				//logger.Info("MYDEBUG: STEP 1 at ACKING ", offset.ReadOffset)
-	//				ackChan <- &types.AckMsgFlatmap{
-	//					Message: offset,
-	//					// TODO(stream): should we write for no-ack?
-	//					AckIt: true,
-	//				}
-	//			}
-	//			// clear the writeMessages
-	//			writeMessages = make([]*isb.WriteMessage, 0, isdf.opts.batchSize)
-	//			readOffsets = make([]*isb.ReadMessage, 0, isdf.opts.batchSize)
-	//			//flush = false
-	//		}
-	//	}
-	//
-	//	// if there are any messages left, forward them to the ISB
-	//	if len(writeMessages) > 0 {
-	//		if err := isdf.forwardToBuffers(ctx, &writeMessages); err != nil {
-	//			// TODO(stream): mark as no ack directly or retry
-	//		}
-	//		for _, offset := range readOffsets {
-	//			//logger.Info("MYDEBUG: STEP 1 at ACKING ", offset.ReadOffset)
-	//			ackChan <- &types.AckMsgFlatmap{
-	//				Message: offset,
-	//				// TODO(stream): should we write for no-ack?
-	//				AckIt: true,
-	//			}
-	//		}
-	//		// clear the writeMessages
-	//		writeMessages = make([]*isb.WriteMessage, 0, isdf.opts.batchSize)
-	//		readOffsets = make([]*isb.ReadMessage, 0, isdf.opts.batchSize)
-	//		//flush = false
-	//	}
-	//}()
-	//go func() {
-	//	logger.Info("MYDEBUG: I'm writing to buffer here")
-	//	defer close(ackChan)
-	//	ctx := isdf.ctx
-	//	// TODO: check pnf.forwardResponses
-	//	// create space for writeMessages specific to each step as we could forward to all the steps too.
-	//	// these messages are for per partition (due to round-robin writes) for load balancing
-	//	var messageToStep = make(map[string][][]isb.Message)
-	//	var writeOffsets = make(map[string][][]isb.Offset)
-	//
-	//	for toVertex := range isdf.toBuffers {
-	//		// over allocating to have a predictable pattern
-	//		messageToStep[toVertex] = make([][]isb.Message, len(isdf.toBuffers[toVertex]))
-	//		writeOffsets[toVertex] = make([][]isb.Offset, len(isdf.toBuffers[toVertex]))
-	//	}
-	//	// Stream the message to the next vertex. First figure out which vertex
-	//	// to send the result to. Then update the toBuffer(s) with writeMessage.
-	//	msgIndex := 0
-	//	for msg := range writeMessageCh {
-	//		logger.Info("MYDEBUG: Got a msg on writeMessageCh ", msg.Message.Uid)
-	//		if !msg.AckIt {
-	//			// TODO(stream): if no ack directly set let's short circuit?
-	//		}
-	//		parentMessage := msg.Message.ParentMessage
-	//		writeMessage := msg.Message.RespMessage
-	//
-	//		writeMessage.Headers = parentMessage.Headers
-	//		// add vertex name to the ID, since multiple vertices can publish to the same vertex and we need uniqueness across them
-	//		// TODO(stream): check if this ID is correct for DEDUP?
-	//		logger.Info("MYDEBUG: DEDUP ID ", writeMessage.ID)
-	//		//writeMessage.ID = fmt.Sprintf("%s-%s-%d", parentMessage.ReadOffset.String(), isdf.vertexName, msgIndex)
-	//		msgIndex += 1
-	//		metrics.UDFWriteMessagesCount.With(map[string]string{metrics.LabelVertex: isdf.vertexName, metrics.LabelPipeline: isdf.pipelineName, metrics.LabelVertexType: string(dfv1.VertexTypeMapUDF), metrics.LabelVertexReplicaIndex: strconv.Itoa(int(isdf.vertexReplica)), metrics.LabelPartitionName: isdf.fromBufferPartition.GetName()}).Add(float64(1))
-	//
-	//		// update toBuffers
-	//		if err := isdf.whereToStep(writeMessage, messageToStep, parentMessage); err != nil {
-	//			// TODO(stream): mark as no ack directly or retry
-	//			//return nil, fmt.Errorf("failed at whereToStep, error: %w", err)
-	//		}
-	//		logger.Info("MYDEBUG: STEP 2 at ACKING ", msg.Message.Uid)
-	//
-	//		// Forward the message to the edge buffer (could be multiple edges)
-	//		curWriteOffsets, err := isdf.writeToBuffers(ctx, messageToStep)
-	//		if err != nil {
-	//			// TODO(stream): mark as no ack directly or retry
-	//			//return nil, fmt.Errorf("failed to write to toBuffers, error: %w", err)
-	//		}
-	//		logger.Info("MYDEBUG: STEP 3 at ACKING ", msg.Message.Uid)
-	//		// Merge curWriteOffsets into writeOffsets
-	//		for vertexName, toVertexBufferOffsets := range curWriteOffsets {
-	//			for index, offsets := range toVertexBufferOffsets {
-	//				writeOffsets[vertexName][index] = append(writeOffsets[vertexName][index], offsets...)
-	//			}
-	//		}
-	//		logger.Info("MYDEBUG: STEP 4 at ACKING ", len(curWriteOffsets))
-	//
-	//		// TODO(stream): Message written successfully -> send for ack
-	//		ackChan <- &types.AckMsgFlatmap{
-	//			Message: parentMessage,
-	//			AckIt:   msg.AckIt,
-	//		}
-	//		logger.Info("MYDEBUG: WRITE sent a msg for ACK ", parentMessage.ReadOffset)
-	//		// TODO(stream): publish new watermark
-	//	}
-	//}()
-	//return ackChan
-
 }
 
-func (isdf *InterStepDataForward) ackRoutine(ctx context.Context, ackMsgChan <-chan *types.AckMsgFlatmap) {
+//
+//func (isdf *InterStepDataForward) writeAhead(writeMessageCh <-chan *types.WriteMsgFlatmap) <-chan *types.AckMsgFlatmap {
+//	// TODO(stream): check buffered channel size
+//	//logger := isdf.opts.logger
+//	ackChan := make(chan *types.AckMsgFlatmap, isdf.opts.readBatchSize)
+//	ctx := isdf.ctx
+//
+//	go func() {
+//		defer close(ackChan)
+//		group := sync.WaitGroup{}
+//		for i := 0; i < 1; i++ {
+//			group.Add(1)
+//			go isdf.writeRoutine(ctx, writeMessageCh, ackChan)
+//		}
+//		group.Wait()
+//	}()
+//	return ackChan
+//
+//	//go func() {
+//	//	defer close(ackChan)
+//	//	flushTimer := time.NewTicker(isdf.opts.flushDuration)
+//	//	writeMessages := make([]*isb.WriteMessage, 0, isdf.opts.batchSize)
+//	//	readOffsets := make([]*isb.ReadMessage, 0, isdf.opts.batchSize)
+//	//
+//	//	// should we flush?
+//	//	var flush bool
+//	//	//logger.Info("MYDEBUG: I'm writing to buffer here")
+//	//
+//	//	// error != nil only when the context is closed, so we can safely return (our write loop will try indefinitely
+//	//	// unless ctx.Done() happens)
+//	//	flush = true
+//	//forwardLoop:
+//	//	for {
+//	//		select {
+//	//		case response, ok := <-writeMessageCh:
+//	//			if !ok {
+//	//				// TODO(stream): check the error logic here
+//	//				break forwardLoop
+//	//			}
+//	//			if !response.AckIt {
+//	//				// TODO(stream): if no ack directly set let's short circuit?
+//	//			}
+//	//
+//	//			// append the write message to the array
+//	//			writeMessages = append(writeMessages, response.Message.RespMessage)
+//	//			readOffsets = append(readOffsets, response.Message.ParentMessage)
+//	//
+//	//			// if the batch size is reached, let's flush
+//	//			if len(writeMessages) >= isdf.opts.batchSize {
+//	//				flush = true
+//	//			}
+//	//
+//	//		case <-flushTimer.C:
+//	//			// if there are no messages to write, continue
+//	//			if len(writeMessages) == 0 {
+//	//				continue
+//	//			}
+//	//
+//	//			// Since flushTimer is triggered, it is time to flush
+//	//			flush = true
+//	//		}
+//	//
+//	//		if flush {
+//	//			if err := isdf.forwardToBuffers(ctx, &writeMessages); err != nil {
+//	//				// TODO(stream): mark as no ack directly or retry
+//	//			}
+//	//
+//	//			for _, offset := range readOffsets {
+//	//				logger.Info("MYDEBUG: Sending to ack ", offset.ReadOffset.String(), " ", time.Now().UnixNano())
+//	//				//logger.Info("MYDEBUG: STEP 1 at ACKING ", offset.ReadOffset)
+//	//				ackChan <- &types.AckMsgFlatmap{
+//	//					Message: offset,
+//	//					// TODO(stream): should we write for no-ack?
+//	//					AckIt: true,
+//	//				}
+//	//			}
+//	//			// clear the writeMessages
+//	//			writeMessages = make([]*isb.WriteMessage, 0, isdf.opts.batchSize)
+//	//			readOffsets = make([]*isb.ReadMessage, 0, isdf.opts.batchSize)
+//	//			//flush = false
+//	//		}
+//	//	}
+//	//
+//	//	// if there are any messages left, forward them to the ISB
+//	//	if len(writeMessages) > 0 {
+//	//		if err := isdf.forwardToBuffers(ctx, &writeMessages); err != nil {
+//	//			// TODO(stream): mark as no ack directly or retry
+//	//		}
+//	//		for _, offset := range readOffsets {
+//	//			//logger.Info("MYDEBUG: STEP 1 at ACKING ", offset.ReadOffset)
+//	//			ackChan <- &types.AckMsgFlatmap{
+//	//				Message: offset,
+//	//				// TODO(stream): should we write for no-ack?
+//	//				AckIt: true,
+//	//			}
+//	//		}
+//	//		// clear the writeMessages
+//	//		writeMessages = make([]*isb.WriteMessage, 0, isdf.opts.batchSize)
+//	//		readOffsets = make([]*isb.ReadMessage, 0, isdf.opts.batchSize)
+//	//		//flush = false
+//	//	}
+//	//}()
+//	//go func() {
+//	//	logger.Info("MYDEBUG: I'm writing to buffer here")
+//	//	defer close(ackChan)
+//	//	ctx := isdf.ctx
+//	//	// TODO: check pnf.forwardResponses
+//	//	// create space for writeMessages specific to each step as we could forward to all the steps too.
+//	//	// these messages are for per partition (due to round-robin writes) for load balancing
+//	//	var messageToStep = make(map[string][][]isb.Message)
+//	//	var writeOffsets = make(map[string][][]isb.Offset)
+//	//
+//	//	for toVertex := range isdf.toBuffers {
+//	//		// over allocating to have a predictable pattern
+//	//		messageToStep[toVertex] = make([][]isb.Message, len(isdf.toBuffers[toVertex]))
+//	//		writeOffsets[toVertex] = make([][]isb.Offset, len(isdf.toBuffers[toVertex]))
+//	//	}
+//	//	// Stream the message to the next vertex. First figure out which vertex
+//	//	// to send the result to. Then update the toBuffer(s) with writeMessage.
+//	//	msgIndex := 0
+//	//	for msg := range writeMessageCh {
+//	//		logger.Info("MYDEBUG: Got a msg on writeMessageCh ", msg.Message.Uid)
+//	//		if !msg.AckIt {
+//	//			// TODO(stream): if no ack directly set let's short circuit?
+//	//		}
+//	//		parentMessage := msg.Message.ParentMessage
+//	//		writeMessage := msg.Message.RespMessage
+//	//
+//	//		writeMessage.Headers = parentMessage.Headers
+//	//		// add vertex name to the ID, since multiple vertices can publish to the same vertex and we need uniqueness across them
+//	//		// TODO(stream): check if this ID is correct for DEDUP?
+//	//		logger.Info("MYDEBUG: DEDUP ID ", writeMessage.ID)
+//	//		//writeMessage.ID = fmt.Sprintf("%s-%s-%d", parentMessage.ReadOffset.String(), isdf.vertexName, msgIndex)
+//	//		msgIndex += 1
+//	//		metrics.UDFWriteMessagesCount.With(map[string]string{metrics.LabelVertex: isdf.vertexName, metrics.LabelPipeline: isdf.pipelineName, metrics.LabelVertexType: string(dfv1.VertexTypeMapUDF), metrics.LabelVertexReplicaIndex: strconv.Itoa(int(isdf.vertexReplica)), metrics.LabelPartitionName: isdf.fromBufferPartition.GetName()}).Add(float64(1))
+//	//
+//	//		// update toBuffers
+//	//		if err := isdf.whereToStep(writeMessage, messageToStep, parentMessage); err != nil {
+//	//			// TODO(stream): mark as no ack directly or retry
+//	//			//return nil, fmt.Errorf("failed at whereToStep, error: %w", err)
+//	//		}
+//	//		logger.Info("MYDEBUG: STEP 2 at ACKING ", msg.Message.Uid)
+//	//
+//	//		// Forward the message to the edge buffer (could be multiple edges)
+//	//		curWriteOffsets, err := isdf.writeToBuffers(ctx, messageToStep)
+//	//		if err != nil {
+//	//			// TODO(stream): mark as no ack directly or retry
+//	//			//return nil, fmt.Errorf("failed to write to toBuffers, error: %w", err)
+//	//		}
+//	//		logger.Info("MYDEBUG: STEP 3 at ACKING ", msg.Message.Uid)
+//	//		// Merge curWriteOffsets into writeOffsets
+//	//		for vertexName, toVertexBufferOffsets := range curWriteOffsets {
+//	//			for index, offsets := range toVertexBufferOffsets {
+//	//				writeOffsets[vertexName][index] = append(writeOffsets[vertexName][index], offsets...)
+//	//			}
+//	//		}
+//	//		logger.Info("MYDEBUG: STEP 4 at ACKING ", len(curWriteOffsets))
+//	//
+//	//		// TODO(stream): Message written successfully -> send for ack
+//	//		ackChan <- &types.AckMsgFlatmap{
+//	//			Message: parentMessage,
+//	//			AckIt:   msg.AckIt,
+//	//		}
+//	//		logger.Info("MYDEBUG: WRITE sent a msg for ACK ", parentMessage.ReadOffset)
+//	//		// TODO(stream): publish new watermark
+//	//	}
+//	//}()
+//	//return ackChan
+//
+//}
+
+//func (isdf *InterStepDataForward) ackRoutine(ctx context.Context, ackMsgChan <-chan *types.AckMsgFlatmap) {
+//	logger := isdf.opts.logger
+//forwardLoop:
+//	for {
+//		select {
+//		case response, ok := <-ackMsgChan:
+//			if !ok {
+//				break forwardLoop
+//			}
+//			if response.AckIt {
+//				ackMessages := []isb.Offset{response.Message.ReadOffset}
+//				if err := isdf.ackFromBuffer(ctx, ackMessages); err != nil {
+//					// TODO(stream): we have retried in the ackFromBuffer, should we trigger
+//					// shutdown here then?
+//				}
+//				logger.Info("MYDEBUG: Done with ack ", ackMessages, " ", time.Now().UnixNano())
+//			} else {
+//				noAckMessages := []isb.Offset{response.Message.ReadOffset}
+//				isdf.noAckMessages(ctx, noAckMessages)
+//			}
+//		}
+//	}
+//}
+
+func (isdf *InterStepDataForward) ackRoutine(ctx context.Context, ackMsgChan <-chan *isb.ReadMessage) {
 	logger := isdf.opts.logger
+	logger.Info("MYDEBUG: NO WG ACK ROUTINE ", isdf.opts.readBatchSize)
 forwardLoop:
 	for {
 		select {
+		case <-ctx.Done():
+			break forwardLoop
+
 		case response, ok := <-ackMsgChan:
 			if !ok {
+				logger.Info("MYDEBUG: ERROR ACK ROUTINE")
 				break forwardLoop
 			}
-			if response.AckIt {
-				ackMessages := []isb.Offset{response.Message.ReadOffset}
-				if err := isdf.ackFromBuffer(ctx, ackMessages); err != nil {
-					// TODO(stream): we have retried in the ackFromBuffer, should we trigger
-					// shutdown here then?
-				}
-				logger.Info("MYDEBUG: Done with ack ", ackMessages, " ", time.Now().UnixNano())
-			} else {
-				noAckMessages := []isb.Offset{response.Message.ReadOffset}
-				isdf.noAckMessages(ctx, noAckMessages)
+			ackMessages := []isb.Offset{response.ReadOffset}
+			if err := isdf.ackFromBuffer(ctx, ackMessages); err != nil {
+				// TODO(stream): we have retried in the ackFromBuffer, should we trigger
+				// shutdown here then?
 			}
 		}
-
 	}
-
 }
 
+func (isdf *InterStepDataForward) writeRoutineNew(ctx context.Context, writeMessageCh <-chan *types.WriteMsgFlatmap, ackChan chan<- *isb.ReadMessage, wg *sync.WaitGroup) {
+	logger := isdf.opts.logger
+	logger.Info("PLEASE WORK WRITE ROUTINE")
+	////flushTimer := time.NewTicker(isdf.opts.flushDuration)
+	//writeMessages := make([]*isb.WriteMessage, 0, isdf.opts.batchSize)
+	//readOffsets := make([]*isb.ReadMessage, 0, isdf.opts.batchSize)
+	defer wg.Done()
+forwardLoop:
+	for {
+		idx := 0
+		select {
+		case msg, ok := <-writeMessageCh:
+			if !ok {
+				logger.Info("MYDEBUG: ERROR WRITE ROUTINE")
+				// TODO(stream): check the error logic here
+				break forwardLoop
+			}
+			idx += 1
+			//taggedMessage := &isb.WriteMessage{
+			//	Message: isb.Message{
+			//		Header: isb.Header{
+			//			MessageInfo: msg.MessageInfo,
+			//			// TODO(stream): Check what will be the unique ID to use here
+			//			//msgId := fmt.Sprintf("%s-%d-%s-%d", u.vertexName, u.vertexReplica, partitionID.String(), index)
+			//			ID:   fmt.Sprintf("%s-%d", msg.ReadOffset.String(), idx),
+			//			Keys: msg.Keys,
+			//		},
+			//		Body: isb.Body{
+			//			Payload: msg.Payload,
+			//		},
+			//		ReadOffset: msg.ReadOffset,
+			//	},
+			//	Tags: msg.Keys,
+			//}
+
+			taggedMessage := msg.Message.RespMessage
+			var messageToStep = make(map[string][]isb.Message)
+			for toVertex := range isdf.toBuffers {
+				// over allocating to have a predictable pattern
+				messageToStep[toVertex] = make([]isb.Message, len(isdf.toBuffers[toVertex]))
+			}
+
+			//writeMessages = append(writeMessages, taggedMessage)
+			//readOffsets = append(readOffsets, msg)
+			//
+			//if len(writeMessages) >= int(isdf.opts.readBatchSize) {
+			//	logger.Info("MYDEBUG: PLEASE WORK ROUTINE", len(writeMessages))
+			writeMessages := []*isb.WriteMessage{taggedMessage}
+			if err := isdf.forwardToBuffersNew(ctx, &writeMessages, msg.Message.ParentMessage, messageToStep); err != nil {
+				//	// TODO(stream): mark as no ack directly or retry
+			}
+			//	for _, offset := range readOffsets {
+			//		ackChan <- offset
+			//	}
+			//	writeMessages = make([]*isb.WriteMessage, 0, isdf.opts.batchSize)
+			//	readOffsets = make([]*isb.ReadMessage, 0, isdf.opts.batchSize)
+			//}
+			//writeMessages := []*isb.WriteMessage{taggedMessage}
+			//if err := isdf.forwardToBuffers(ctx, &writeMessages); err != nil {
+			//	//	// TODO(stream): mark as no ack directly or retry
+			//}
+			ackChan <- msg.Message.ParentMessage
+		}
+	}
+}
+
+//
 //func (isdf *InterStepDataForward) ackPrevBuffer(ackMsgChan <-chan *types.AckMsgFlatmap) {
 //	ctx := isdf.ctx
 //	flushTimer := time.NewTicker(isdf.opts.flushDuration)
@@ -681,7 +898,7 @@ forwardLoop:
 //		isdf.noAckMessages(ctx, noAckMessages)
 //		noAckMessages = make([]isb.Offset, 0, isdf.opts.batchSize)
 //	}
-
+//
 //}
 
 // forwardAChunk forwards a chunk of message from the fromBufferPartition to the toBuffers. It does the Read -> Process -> Forward -> Ack chain
@@ -698,17 +915,16 @@ func (isdf *InterStepDataForward) forwardAChunk(ctx context.Context) {
 	// processing data
 	writeMsgChan := isdf.processUdf(inputMessagesChan)
 
-	// writing data to next ISB buffer
-	ackMsgChan := isdf.writeAhead(writeMsgChan)
+	//writing data to next ISB buffer
+	ackMsgChan := isdf.writeAheadNew(writeMsgChan)
+	//ackMsgChan := isdf.writeAheadNew(inputMessagesChan)
 
 	// Ack to previous ISB
 	go func() {
-		group := sync.WaitGroup{}
-		for i := 0; i < isdf.opts.batchSize; i++ {
-			group.Add(1)
+		for i := 0; i < 4*int(isdf.opts.readBatchSize); i++ {
+			//go isdf.ackRoutine(isdf.ctx, ackMsgChan)
 			go isdf.ackRoutine(isdf.ctx, ackMsgChan)
 		}
-		group.Wait()
 	}()
 
 	// TODO(stream): check ideal way to wait here
@@ -716,7 +932,7 @@ func (isdf *InterStepDataForward) forwardAChunk(ctx context.Context) {
 }
 
 // whereToStep executes the WhereTo interfaces and then updates the to step's writeToBuffers buffer.
-func (isdf *InterStepDataForward) whereToStep(writeMessage *isb.WriteMessage, messageToStep map[string][][]isb.Message, readMessage *isb.ReadMessage) error {
+func (isdf *InterStepDataForward) whereToStep(writeMessage *isb.WriteMessage, messageToStep map[string][]isb.Message, readMessage *isb.ReadMessage) error {
 	// call WhereTo and drop it on errors
 	to, err := isdf.FSD.WhereTo(writeMessage.Keys, writeMessage.Tags, writeMessage.ID)
 	if err != nil {
@@ -734,7 +950,7 @@ func (isdf *InterStepDataForward) whereToStep(writeMessage *isb.WriteMessage, me
 		if _, ok := messageToStep[t.ToVertexName]; !ok {
 			isdf.opts.logger.Errorw("failed in whereToStep", zap.Error(isb.MessageWriteErr{Name: isdf.fromBufferPartition.GetName(), Header: readMessage.Header, Body: readMessage.Body, Message: fmt.Sprintf("no such destination (%s)", t.ToVertexName)}))
 		}
-		messageToStep[t.ToVertexName][t.ToVertexPartitionIdx] = append(messageToStep[t.ToVertexName][t.ToVertexPartitionIdx], writeMessage.Message)
+		messageToStep[t.ToVertexName][t.ToVertexPartitionIdx] = writeMessage.Message
 	}
 	return nil
 }
@@ -742,7 +958,7 @@ func (isdf *InterStepDataForward) whereToStep(writeMessage *isb.WriteMessage, me
 // writeToBuffers is a blocking call until all the messages have be forwarded to all the toBuffers, or a shutdown
 // has been initiated while we are stuck looping on an InternalError.
 func (isdf *InterStepDataForward) writeToBuffers(
-	ctx context.Context, messageToStep map[string][][]isb.Message,
+	ctx context.Context, messageToStep map[string][]isb.Message,
 ) (writeOffsets map[string][][]isb.Offset, err error) {
 	// messageToStep contains all the to buffers, so the messages could be empty (conditional forwarding).
 	// So writeOffsets also contains all the to buffers, but the returned offsets might be empty.
@@ -762,66 +978,71 @@ func (isdf *InterStepDataForward) writeToBuffers(
 }
 
 // writeToBuffer forwards an array of messages to a single buffer and is a blocking call or until shutdown has been initiated.
-func (isdf *InterStepDataForward) writeToBuffer(ctx context.Context, toBufferPartition isb.BufferWriter, messages []isb.Message) (writeOffsets []isb.Offset, err error) {
+func (isdf *InterStepDataForward) writeToBuffer(ctx context.Context, toBufferPartition isb.BufferWriter, msg isb.Message) (writeOffsets []isb.Offset, err error) {
 	var (
-		totalCount int
+		//totalCount int
 		writeCount int
 		writeBytes float64
 	)
-	totalCount = len(messages)
-	writeOffsets = make([]isb.Offset, 0, totalCount)
+	//totalCount = len(messages)
+	//writeOffsets = make([]isb.Offset, 0, totalCount)
 
 	for {
-		_writeOffsets, errs := toBufferPartition.Write(ctx, messages)
+		// EXTRA
+		var _writeOffsets []isb.Offset = nil
+		var errs []error = nil
+		//_writeOffsets, errs := toBufferPartition.Write(ctx, []isb.Message{msg})
 		// Note: this is an unwanted memory allocation during a happy path. We want only minimal allocation since using failedMessages is an unlikely path.
-		var failedMessages []isb.Message
+		var failedMessages isb.Message
 		needRetry := false
-		for idx, msg := range messages {
-			if err = errs[idx]; err != nil {
-				// ATM there are no user-defined errors during write, all are InternalErrors.
-				// Non retryable error, drop the message. Non retryable errors are only returned
-				// when the buffer is full and the user has set the buffer full strategy to
-				// DiscardLatest or when the message is duplicate.
-				if errors.As(err, &isb.NonRetryableBufferWriteErr{}) {
-					metrics.DropMessagesCount.With(map[string]string{
-						metrics.LabelVertex:             isdf.vertexName,
-						metrics.LabelPipeline:           isdf.pipelineName,
-						metrics.LabelVertexType:         string(dfv1.VertexTypeSink),
-						metrics.LabelVertexReplicaIndex: strconv.Itoa(int(isdf.vertexReplica)),
-						metrics.LabelPartitionName:      toBufferPartition.GetName(),
-						metrics.LabelReason:             err.Error(),
-					}).Inc()
+		//for idx, msg := range messages {
+		// EXTRA
+		if err != nil {
+			//if err = errs[idx]; err != nil {
+			// ATM there are no user-defined errors during write, all are InternalErrors.
+			// Non retryable error, drop the message. Non retryable errors are only returned
+			// when the buffer is full and the user has set the buffer full strategy to
+			// DiscardLatest or when the message is duplicate.
+			if errors.As(err, &isb.NonRetryableBufferWriteErr{}) {
+				metrics.DropMessagesCount.With(map[string]string{
+					metrics.LabelVertex:             isdf.vertexName,
+					metrics.LabelPipeline:           isdf.pipelineName,
+					metrics.LabelVertexType:         string(dfv1.VertexTypeSink),
+					metrics.LabelVertexReplicaIndex: strconv.Itoa(int(isdf.vertexReplica)),
+					metrics.LabelPartitionName:      toBufferPartition.GetName(),
+					metrics.LabelReason:             err.Error(),
+				}).Inc()
 
-					metrics.DropBytesCount.With(map[string]string{
-						metrics.LabelVertex:             isdf.vertexName,
-						metrics.LabelPipeline:           isdf.pipelineName,
-						metrics.LabelVertexType:         string(dfv1.VertexTypeSink),
-						metrics.LabelVertexReplicaIndex: strconv.Itoa(int(isdf.vertexReplica)),
-						metrics.LabelPartitionName:      toBufferPartition.GetName(),
-						metrics.LabelReason:             err.Error(),
-					}).Add(float64(len(msg.Payload)))
+				metrics.DropBytesCount.With(map[string]string{
+					metrics.LabelVertex:             isdf.vertexName,
+					metrics.LabelPipeline:           isdf.pipelineName,
+					metrics.LabelVertexType:         string(dfv1.VertexTypeSink),
+					metrics.LabelVertexReplicaIndex: strconv.Itoa(int(isdf.vertexReplica)),
+					metrics.LabelPartitionName:      toBufferPartition.GetName(),
+					metrics.LabelReason:             err.Error(),
+				}).Add(float64(len(msg.Payload)))
 
-					isdf.opts.logger.Infow("Dropped message", zap.String("reason", err.Error()), zap.String("partition", toBufferPartition.GetName()), zap.String("vertex", isdf.vertexName), zap.String("pipeline", isdf.pipelineName))
-				} else {
-					needRetry = true
-					// we retry only failed messages
-					failedMessages = append(failedMessages, msg)
-					metrics.WriteMessagesError.With(map[string]string{metrics.LabelVertex: isdf.vertexName, metrics.LabelPipeline: isdf.pipelineName, metrics.LabelVertexType: string(dfv1.VertexTypeMapUDF), metrics.LabelVertexReplicaIndex: strconv.Itoa(int(isdf.vertexReplica)), metrics.LabelPartitionName: toBufferPartition.GetName()}).Inc()
-					// a shutdown can break the blocking loop caused due to InternalErr
-					if ok, _ := isdf.IsShuttingDown(); ok {
-						metrics.PlatformError.With(map[string]string{metrics.LabelVertex: isdf.vertexName, metrics.LabelPipeline: isdf.pipelineName, metrics.LabelVertexType: string(dfv1.VertexTypeMapUDF), metrics.LabelVertexReplicaIndex: strconv.Itoa(int(isdf.vertexReplica))}).Inc()
-						return writeOffsets, fmt.Errorf("writeToBuffer failed, Stop called while stuck on an internal error with failed messages:%d, %v", len(failedMessages), errs)
-					}
-				}
+				isdf.opts.logger.Infow("Dropped message", zap.String("reason", err.Error()), zap.String("partition", toBufferPartition.GetName()), zap.String("vertex", isdf.vertexName), zap.String("pipeline", isdf.pipelineName))
 			} else {
-				writeCount++
-				writeBytes += float64(len(msg.Payload))
-				// we support write offsets only for jetstream
-				if _writeOffsets != nil {
-					writeOffsets = append(writeOffsets, _writeOffsets[idx])
+				needRetry = true
+				// we retry only failed messages
+				failedMessages = msg
+				metrics.WriteMessagesError.With(map[string]string{metrics.LabelVertex: isdf.vertexName, metrics.LabelPipeline: isdf.pipelineName, metrics.LabelVertexType: string(dfv1.VertexTypeMapUDF), metrics.LabelVertexReplicaIndex: strconv.Itoa(int(isdf.vertexReplica)), metrics.LabelPartitionName: toBufferPartition.GetName()}).Inc()
+				// a shutdown can break the blocking loop caused due to InternalErr
+				if ok, _ := isdf.IsShuttingDown(); ok {
+					metrics.PlatformError.With(map[string]string{metrics.LabelVertex: isdf.vertexName, metrics.LabelPipeline: isdf.pipelineName, metrics.LabelVertexType: string(dfv1.VertexTypeMapUDF), metrics.LabelVertexReplicaIndex: strconv.Itoa(int(isdf.vertexReplica))}).Inc()
+					return writeOffsets, fmt.Errorf("writeToBuffer failed, Stop called while stuck on an internal error with failed messages: %v", errs)
 				}
 			}
+		} else {
+			writeCount++
+			writeBytes += float64(len(msg.Payload))
+			// we support write offsets only for jetstream
+			if _writeOffsets != nil {
+				writeOffsets = _writeOffsets
+			}
 		}
+		//}
 
 		if needRetry {
 			isdf.opts.logger.Errorw("Retrying failed messages",
@@ -831,7 +1052,7 @@ func (isdf *InterStepDataForward) writeToBuffer(ctx context.Context, toBufferPar
 				zap.String(metrics.LabelPartitionName, toBufferPartition.GetName()),
 			)
 			// set messages to failed for the retry
-			messages = failedMessages
+			msg = failedMessages
 			// TODO: implement retry with backoff etc.
 			time.Sleep(isdf.opts.retryInterval)
 		} else {
@@ -914,6 +1135,26 @@ func (isdf *InterStepDataForward) processWriteMessage(msg *types.ResponseFlatmap
 		Message: msg,
 		AckIt:   ackIt,
 	}
+}
+
+func (isdf *InterStepDataForward) forwardToBuffersNew(ctx context.Context, writeMessages *[]*isb.WriteMessage, readMessage *isb.ReadMessage, messageToStep map[string][]isb.Message) error {
+	if len(*writeMessages) == 0 {
+		return nil
+	}
+	for _, message := range *writeMessages {
+		if err := isdf.whereToStep(message, messageToStep, readMessage); err != nil {
+			isdf.opts.logger.Errorw("failed in whereToStep", zap.Error(err))
+			return err
+		}
+	}
+
+	// forward the messages to the edge buffer (could be multiple edges)
+	_, err := isdf.writeToBuffers(ctx, messageToStep)
+	if err != nil {
+		isdf.opts.logger.Errorw("failed to write to toBuffers", zap.Error(err))
+		return err
+	}
+	return nil
 }
 
 // forwardToBuffers writes the messages to the ISBs concurrently for each partition.
@@ -1008,13 +1249,16 @@ func (isdf *InterStepDataForward) writeToBufferNew(ctx context.Context, edgeName
 	writeMessages := resultMessages
 
 	// write to isb with infinite exponential backoff (until shutdown is triggered)
-	var offsets []isb.Offset
+	//var offsets []isb.Offset
+	offsets := make([]isb.Offset, len(writeMessages))
 	ctxClosedErr := wait.ExponentialBackoff(ISBWriteBackoff, func() (done bool, err error) {
 		var writeErrs []error
 		var failedMessages []isb.Message
-		offsets, writeErrs = isdf.toBuffers[edgeName][partition].Write(ctx, writeMessages)
-		for i, message := range writeMessages {
-			writeErr := writeErrs[i]
+		//offsets, writeErrs = isdf.toBuffers[edgeName][partition].Write(ctx, writeMessages)
+		for _, message := range writeMessages {
+			offsets = append(offsets, message.ReadOffset)
+			var writeErr error = nil
+			//writeErr := writeErrs[i]
 			if writeErr != nil {
 				// Non retryable error, drop the message. Non retryable errors are only returned
 				// when the buffer is full and the user has set the buffer full strategy to

@@ -28,7 +28,7 @@ func GetNewId() string {
 
 func (t *Tracker) AddRequest(msg *isb.ReadMessage) string {
 	id := GetNewId()
-	t.requestMap.Store(id, msg)
+	//t.requestMap.Store(id, msg)
 	return id
 }
 
