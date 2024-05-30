@@ -173,11 +173,16 @@ func (isdf *InterStepDataForward) readData() (<-chan *isb.ReadMessage, chan stru
 					isdf.opts.logger.Warnw("failed to read fromBufferPartition", zap.Error(err))
 					metrics.ReadMessagesError.With(map[string]string{metrics.LabelVertex: isdf.vertexName, metrics.LabelPipeline: isdf.pipelineName, metrics.LabelVertexType: string(dfv1.VertexTypeMapUDF), metrics.LabelVertexReplicaIndex: strconv.Itoa(int(isdf.vertexReplica)), metrics.LabelPartitionName: isdf.fromBufferPartition.GetName()}).Inc()
 				}
+
 				//inputMessages <- readMessages
 				// Keep streaming the messages read to the inputMessages channel
 				for _, msg := range readMessages {
+					if msg.Kind == isb.Data {
+						inputMessages <- msg
+						metrics.ReadDataMessagesCount.With(map[string]string{metrics.LabelVertex: isdf.vertexName, metrics.LabelPipeline: isdf.pipelineName, metrics.LabelVertexType: string(dfv1.VertexTypeMapUDF), metrics.LabelVertexReplicaIndex: strconv.Itoa(int(isdf.vertexReplica)), metrics.LabelPartitionName: isdf.fromBufferPartition.GetName()}).Inc()
+						//dataMessages = append(dataMessages, m)
+					}
 					//log.Info("MYDEBUG: streaming in read function ", msg.ReadOffset.String(), " ", time.Now().UnixNano())
-					inputMessages <- msg
 				}
 			}
 		}
@@ -188,8 +193,10 @@ func (isdf *InterStepDataForward) readData() (<-chan *isb.ReadMessage, chan stru
 func (isdf *InterStepDataForward) processRoutine(ctx context.Context, inputMessageChan <-chan *types.ResponseFlatmap, writeChan chan<- *types.WriteMsgFlatmap) {
 	defer close(writeChan)
 	idx := 0
+	//logger := isdf.opts.logger
+	//timer := time.Now()
 	for msg := range inputMessageChan {
-		//logger.Info("MYDEBUG: Let's send to resp Chan here")
+		//logger.Info("MYDEBUG: Let's send to resp Chan here ", idx, "::", time.Now())
 		select {
 		case <-ctx.Done():
 			return
@@ -230,38 +237,7 @@ func (isdf *InterStepDataForward) processUdf(inputMessageChan <-chan *isb.ReadMe
 
 	//logger := isdf.opts.logger
 	// TODO(stream) : enable idle watermark publishing
-
-	//if len(readMessages) == 0 {
-	//	// When the read length is zero, the write length is definitely zero too,
-	//	// meaning there's no data to be published to the next vertex, and we consider this
-	//	// situation as idling.
-	//	// In order to continue propagating watermark, we will set watermark idle=true and publish it.
-	//	// We also publish a control message if this is the first time we get this idle situation.
-	//	// We compute the HeadIdleWMB using the given partition as the idle watermark
-	//	var processorWMB = isdf.wmFetcher.ComputeHeadIdleWMB(isdf.fromBufferPartition.GetPartitionIdx())
-	//	if !isdf.wmbChecker.ValidateHeadWMB(processorWMB) {
-	//		// validation failed, skip publishing
-	//		isdf.opts.logger.Debugw("skip publishing idle watermark",
-	//			zap.Int("counter", isdf.wmbChecker.GetCounter()),
-	//			zap.Int64("offset", processorWMB.Offset),
-	//			zap.Int64("watermark", processorWMB.Watermark),
-	//			zap.Bool("idle", processorWMB.Idle))
-	//		return
-	//	}
-	//
-	//	// if the validation passed, we will publish the watermark to all the toBuffer partitions.
-	//	for toVertexName, toVertexBuffer := range isdf.toBuffers {
-	//		for _, partition := range toVertexBuffer {
-	//			if p, ok := isdf.wmPublishers[toVertexName]; ok {
-	//				idlehandler.PublishIdleWatermark(ctx, isdf.fromBufferPartition.GetPartitionIdx(), partition, p, isdf.idleManager, isdf.opts.logger, isdf.vertexName, isdf.pipelineName, dfv1.VertexTypeMapUDF, isdf.vertexReplica, wmb.Watermark(time.UnixMilli(processorWMB.Watermark)))
-	//			}
-	//		}
-	//	}
-	//	return
-	//}
-	//logger.Info("MYDEBUG: I'm processing here")
-
-	// Send thr requests to the grpc server for results, which are received in the udfRespChan
+	// Send the requests to the grpc server for results, which are received in the udfRespChan
 	udfRespChan, err := isdf.flatmapUDF.ApplyMap(ctx, inputMessageChan)
 	// TODO(stream): check error handling
 	if err != nil {
@@ -272,56 +248,6 @@ func (isdf *InterStepDataForward) processUdf(inputMessageChan <-chan *isb.ReadMe
 	// create a channel which would be passed to the next buffers for writing,
 	// errors in messages/no-acks will be propagated from this as well
 	go isdf.processRoutine(ctx, udfRespChan, writeChan)
-	//go func() {
-	//	defer close(writeChan)
-	//	group := sync.WaitGroup{}
-	//	for i := 0; i < 50; i++ {
-	//		group.Add(1)
-	//		go isdf.processRoutine(udfRespChan, writeChan)
-	//	}
-	//	group.Wait()
-	//}()
-	//
-	//go func() {
-	//	defer close(writeChan)
-	//	idx := 0
-	//	for msg := range udfRespChan {
-	//		//logger.Info("MYDEBUG: Let's send to resp Chan here")
-	//		select {
-	//		// TODO(stream): add error handling and shutdown here
-	//		default:
-	//			idx += 1
-	//			//d := isdf.flatmapUDF.ParseMapResponse()
-	//			taggedMessage := &isb.WriteMessage{
-	//				Message: isb.Message{
-	//					Header: isb.Header{
-	//						MessageInfo: msg.MessageInfo,
-	//						// TODO(stream): Check what will be the unique ID to use here
-	//						//msgId := fmt.Sprintf("%s-%d-%s-%d", u.vertexName, u.vertexReplica, partitionID.String(), index)
-	//						ID:   fmt.Sprintf("%s-%d", msg.ReadOffset.String(), idx),
-	//						Keys: msg.Keys,
-	//					},
-	//					Body: isb.Body{
-	//						Payload: msg.Payload,
-	//					},
-	//				},
-	//				Tags: msg.Keys,
-	//			}
-	//			f := &types.WriteMsgFlatmap{
-	//				Message: &types.ResponseFlatmap{
-	//					ParentMessage: msg,
-	//					Uid:           "",
-	//					RespMessage:   taggedMessage,
-	//				},
-	//				AckIt: false,
-	//			}
-	//			//d := isdf.processWriteMessage(f, true)
-	//			//logger.Info("MYDEBUG: Sending to write ", msg.ParentMessage.ReadOffset.String(), " ", time.Now().UnixNano())
-	//			//logger.Info("MYDEBUG: Sending to write", string(msg.RespMessage.Payload), "Sending to write", msg.Uid)
-	//			writeChan <- f
-	//		}
-	//	}
-	//}()
 	return writeChan
 }
 
@@ -521,7 +447,7 @@ func (isdf *InterStepDataForward) writeAheadNew(writeMessageCh <-chan *types.Wri
 	go func() {
 		defer close(ackChan)
 		group := sync.WaitGroup{}
-		for i := 0; i < 4*int(isdf.opts.readBatchSize); i++ {
+		for i := 0; i < int(isdf.opts.readBatchSize); i++ {
 			group.Add(1)
 			go isdf.writeRoutineNew(ctx, writeMessageCh, ackChan, &group)
 		}
@@ -814,97 +740,6 @@ forwardLoop:
 	}
 }
 
-//
-//func (isdf *InterStepDataForward) ackPrevBuffer(ackMsgChan <-chan *types.AckMsgFlatmap) {
-//	ctx := isdf.ctx
-//	flushTimer := time.NewTicker(isdf.opts.flushDuration)
-//	ackMessages := make([]isb.Offset, 0, isdf.opts.batchSize)
-//	noAckMessages := make([]isb.Offset, 0, isdf.opts.batchSize)
-//	logger := isdf.opts.logger
-//
-//	// should we flush?
-//	var flushAck bool
-//
-//	// should we flush?
-//	var flushNoAck bool
-//
-//	flushAck = true
-//	flushNoAck = true
-//	// error != nil only when the context is closed, so we can safely return (our write loop will try indefinitely
-//	// unless ctx.Done() happens)
-//forwardLoop:
-//	for {
-//		select {
-//		case response, ok := <-ackMsgChan:
-//			if !ok {
-//				break forwardLoop
-//			}
-//
-//			if response.AckIt {
-//				// append the ack message to the array
-//				ackMessages = append(ackMessages, response.Message.ReadOffset)
-//			} else {
-//				// append the ack message to the array
-//				noAckMessages = append(noAckMessages, response.Message.ReadOffset)
-//
-//			}
-//
-//			// if the batch size is reached, let's flush
-//			if len(ackMessages) >= isdf.opts.batchSize {
-//				flushAck = true
-//			}
-//
-//			// if the batch size is reached, let's flush
-//			if len(noAckMessages) >= isdf.opts.batchSize {
-//				flushNoAck = true
-//			}
-//
-//		case <-flushTimer.C:
-//			// if there are no messages to write, continue
-//			if len(ackMessages) == 0 {
-//				continue
-//			}
-//
-//			// Since flushTimer is triggered, it is time to flush
-//			flushAck = true
-//			flushNoAck = true
-//		}
-//
-//		if flushAck {
-//			if err := isdf.ackFromBuffer(ctx, ackMessages); err != nil {
-//				// TODO(stream): we have retried in the ackFromBuffer, should we trigger
-//				// shutdown here then?
-//			}
-//			logger.Info("MYDEBUG: Sending to ack ", ackMessages, " ", time.Now().UnixNano())
-//			ackMessages = make([]isb.Offset, 0, isdf.opts.batchSize)
-//			//flushAck = false
-//		}
-//
-//		if flushNoAck {
-//			isdf.noAckMessages(ctx, noAckMessages)
-//			noAckMessages = make([]isb.Offset, 0, isdf.opts.batchSize)
-//			//flushNoAck = false
-//		}
-//	}
-//
-//	// if there are any messages left, forward them to the ISB
-//	if len(ackMessages) > 0 {
-//		if err := isdf.ackFromBuffer(ctx, ackMessages); err != nil {
-//			// TODO(stream): we have retried in the ackFromBuffer, should we trigger
-//			// shutdown here then?
-//			//return
-//		}
-//		ackMessages = make([]isb.Offset, 0, isdf.opts.batchSize)
-//	}
-//
-//	// if there are any messages left, forward them to the ISB
-//	if len(noAckMessages) > 0 {
-//		isdf.noAckMessages(ctx, noAckMessages)
-//		noAckMessages = make([]isb.Offset, 0, isdf.opts.batchSize)
-//	}
-//
-//}
-
 // forwardAChunk forwards a chunk of message from the fromBufferPartition to the toBuffers. It does the Read -> Process -> Forward -> Ack chain
 // for a chunk of messages returned by the first Read call. It will return only if only we are successfully able to ack
 // the message after forwarding, barring any platform errors. The platform errors include buffer-full,
@@ -925,7 +760,7 @@ func (isdf *InterStepDataForward) forwardAChunk(ctx context.Context) {
 
 	// Ack to previous ISB
 	go func() {
-		for i := 0; i < 4*int(isdf.opts.readBatchSize); i++ {
+		for i := 0; i < int(isdf.opts.readBatchSize); i++ {
 			//go isdf.ackRoutine(isdf.ctx, ackMsgChan)
 			go isdf.ackRoutine(isdf.ctx, ackMsgChan)
 		}
@@ -993,9 +828,9 @@ func (isdf *InterStepDataForward) writeToBuffer(ctx context.Context, toBufferPar
 
 	for {
 		// EXTRA
-		var _writeOffsets []isb.Offset = nil
-		var errs []error = nil
-		//_writeOffsets, errs := toBufferPartition.Write(ctx, []isb.Message{msg})
+		//var _writeOffsets []isb.Offset = nil
+		//var errs []error = nil
+		_writeOffsets, errs := toBufferPartition.Write(ctx, []isb.Message{msg})
 		// Note: this is an unwanted memory allocation during a happy path. We want only minimal allocation since using failedMessages is an unlikely path.
 		var failedMessages isb.Message
 		needRetry := false
@@ -1258,11 +1093,11 @@ func (isdf *InterStepDataForward) writeToBufferNew(ctx context.Context, edgeName
 	ctxClosedErr := wait.ExponentialBackoff(ISBWriteBackoff, func() (done bool, err error) {
 		var writeErrs []error
 		var failedMessages []isb.Message
-		//offsets, writeErrs = isdf.toBuffers[edgeName][partition].Write(ctx, writeMessages)
-		for _, message := range writeMessages {
+		offsets, writeErrs = isdf.toBuffers[edgeName][partition].Write(ctx, writeMessages)
+		for i, message := range writeMessages {
 			offsets = append(offsets, message.ReadOffset)
-			var writeErr error = nil
-			//writeErr := writeErrs[i]
+			//var writeErr error = nil
+			writeErr := writeErrs[i]
 			if writeErr != nil {
 				// Non retryable error, drop the message. Non retryable errors are only returned
 				// when the buffer is full and the user has set the buffer full strategy to

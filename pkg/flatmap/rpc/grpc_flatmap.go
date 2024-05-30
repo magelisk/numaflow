@@ -2,6 +2,7 @@ package rpc
 
 import (
 	"fmt"
+	"log"
 	"time"
 
 	flatmappb "github.com/numaproj/numaflow-go/pkg/apis/proto/flatmap/v1"
@@ -41,7 +42,7 @@ func (u *GRPCBasedFlatmap) CloseConn(ctx context.Context) error {
 
 // WaitUntilReady waits until the reduce udf is connected.
 func (u *GRPCBasedFlatmap) WaitUntilReady(ctx context.Context) error {
-	log := logging.FromContext(ctx)
+	logger := logging.FromContext(ctx)
 	for {
 		select {
 		case <-ctx.Done():
@@ -50,7 +51,7 @@ func (u *GRPCBasedFlatmap) WaitUntilReady(ctx context.Context) error {
 			if _, err := u.client.IsReady(ctx, &emptypb.Empty{}); err == nil {
 				return nil
 			} else {
-				log.Infof("waiting for reduce udf to be ready: %v", err)
+				logger.Infof("waiting for reduce udf to be ready: %v", err)
 				time.Sleep(1 * time.Second)
 			}
 		}
@@ -64,50 +65,51 @@ func (u *GRPCBasedFlatmap) ApplyMap(ctx context.Context, messageStream <-chan *i
 		mapRequestCh = make(chan *flatmappb.MapRequest, u.readBatchSize)
 	)
 
+	log.Println("MYDEBUG: NO PROCESS WITH UDF")
 	// invoke the MapFn method with mapRequestCh channel and send the result to responseCh channel
 	// and any error to errCh channel
-	go func() {
-		//log.Println("MYDEBUG: I'm processing here")
-		index := 0
-		resultCh, mapErrCh := u.client.MapFn(ctx, mapRequestCh)
-		for {
-			select {
-			case result, ok := <-resultCh:
-				// TODO(stream): Check error handling here
-				if !ok || result == nil {
-					errCh = nil
-					// if the resultCh channel is closed, close the responseCh and return
-					close(responseCh)
-					return
-				}
-				// create a unique message id for each response message which will be used for deduplication
-				index++
-
-				// TODO(stream): We need to remove the request message from the tracker once this is completed.
-				// As we are streaming messages, we need to have some control field to indicate that this is completed
-				// now, we can do that in the SDK itself.
-				resp, remove := u.ParseMapResponse(result)
-				if remove {
-					u.tracker.RemoveRequest(result.Result.GetUuid())
-
-				} else if resp != nil {
-					responseCh <- resp
-				}
-
-			case err := <-mapErrCh:
-				// TODO(stream): Check error handling here
-				// ctx.Done() event will be handled by the AsyncReduceFn method
-				// so we don't need a separate case for ctx.Done() here
-				if err == ctx.Err() {
-					errCh <- err
-					return
-				}
-				//if err != nil {
-				//	errCh <- convertToUdfError(err)
-				//}
-			}
-		}
-	}()
+	//go func() {
+	//
+	//	index := 0
+	//	resultCh, mapErrCh := u.client.MapFn(ctx, mapRequestCh)
+	//	for {
+	//		select {
+	//		case result, ok := <-resultCh:
+	//			// TODO(stream): Check error handling here
+	//			if !ok || result == nil {
+	//				errCh = nil
+	//				// if the resultCh channel is closed, close the responseCh and return
+	//				close(responseCh)
+	//				return
+	//			}
+	//			// create a unique message id for each response message which will be used for deduplication
+	//			index++
+	//
+	//			// TODO(stream): We need to remove the request message from the tracker once this is completed.
+	//			// As we are streaming messages, we need to have some control field to indicate that this is completed
+	//			// now, we can do that in the SDK itself.
+	//			resp, remove := u.ParseMapResponse(result)
+	//			if remove {
+	//				u.tracker.RemoveRequest(result.Result.GetUuid())
+	//
+	//			} else if resp != nil {
+	//				responseCh <- resp
+	//			}
+	//
+	//		case err := <-mapErrCh:
+	//			// TODO(stream): Check error handling here
+	//			// ctx.Done() event will be handled by the AsyncReduceFn method
+	//			// so we don't need a separate case for ctx.Done() here
+	//			if err == ctx.Err() {
+	//				errCh <- err
+	//				return
+	//			}
+	//			//if err != nil {
+	//			//	errCh <- convertToUdfError(err)
+	//			//}
+	//		}
+	//	}
+	//}()
 
 	// create ReduceRequest from TimedWindowRequest and send it to reduceRequests channel for AsyncReduceFn
 	go func() {
@@ -118,7 +120,7 @@ func (u *GRPCBasedFlatmap) ApplyMap(ctx context.Context, messageStream <-chan *i
 		for {
 			select {
 			case msg, ok := <-messageStream:
-				//log.Println("MYDEBUG: reading for messages here")
+				//log.Println("MYDEBUG: reading for messages here ", time.Now())
 				// if the requestsStream is closed or if the message is nil, return
 				if !ok || msg == nil {
 					//return
@@ -126,13 +128,47 @@ func (u *GRPCBasedFlatmap) ApplyMap(ctx context.Context, messageStream <-chan *i
 
 				d := u.createFlatmapRequest(msg)
 				// send the datum to reduceRequests channel, handle the case when the context is canceled
-				select {
-				// TODO(stream): Check the context end here
-				case mapRequestCh <- d:
-					//log.Println("MYDEBUG: send the message here", d.Uuid)
-					//case <-ctx.Done():
-					//	return
+				//select {
+				//// TODO(stream): Check the context end here
+				//case mapRequestCh <- d:
+				//	//log.Println("MYDEBUG: send the message here", d.Uuid)
+				//	//case <-ctx.Done():
+				//	//	return
+				//}
+
+				//resp, remove := u.ParseMapResponse(result)
+				//if remove {
+				//	u.tracker.RemoveRequest(result.Result.GetUuid())
+				//
+				//} else if resp != nil {
+				//	responseCh <- resp
+				//}
+				//
+
+				// BYPASS THE UDF BY UNCOMMENTING THIS
+				taggedMessage := &isb.WriteMessage{
+					Message: isb.Message{
+						Header: isb.Header{
+							MessageInfo: msg.MessageInfo,
+							// TODO(stream): Check what will be the unique ID to use here
+							//msgId := fmt.Sprintf("%s-%d-%s-%d", u.vertexName, u.vertexReplica, partitionID.String(), index)
+							ID:   fmt.Sprintf("%s-%d", msg.ReadOffset.String(), u.idx),
+							Keys: msg.Keys,
+						},
+						Body: isb.Body{
+							Payload: msg.Payload,
+						},
+					},
+					Tags: msg.Keys,
 				}
+				u.idx += 1
+				//u.tracker.IncrementRespIdx(uid)
+				res := &types.ResponseFlatmap{
+					ParentMessage: msg,
+					Uid:           d.Uuid,
+					RespMessage:   taggedMessage,
+				}
+				responseCh <- res
 				// TODO(stream): Check the context end here, need to invoke shutdown
 				//case <-ctx.Done(): // if the context is done, don't send any more datum to reduceRequests channel
 				//	return

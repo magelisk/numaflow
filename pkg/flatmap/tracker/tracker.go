@@ -12,12 +12,15 @@ type Tracker struct {
 	requestMap sync.Map
 	// TODO(stream): check if this will be inefficient, and there is a better way for this
 	responseIdx sync.Map
+	lock        sync.RWMutex
+	m           map[string]*isb.ReadMessage
 }
 
 func NewTracker() *Tracker {
 	return &Tracker{
 		requestMap:  sync.Map{},
 		responseIdx: sync.Map{},
+		m:           make(map[string]*isb.ReadMessage),
 	}
 }
 
@@ -28,13 +31,13 @@ func GetNewId() string {
 
 func (t *Tracker) AddRequest(msg *isb.ReadMessage) string {
 	id := GetNewId()
-	t.requestMap.Store(id, msg)
+	//t.requestMap.Store(id, msg)
+	t.Set(id, msg)
 	return id
 }
 
 func (t *Tracker) GetRequest(id string) (*isb.ReadMessage, bool) {
-	val, ok := t.requestMap.Load(id)
-	return val.(*isb.ReadMessage), ok
+	return t.Get(id)
 }
 
 func (t *Tracker) NewResponse(id string) {
@@ -60,6 +63,26 @@ func (t *Tracker) GetIdx(id string) (int, bool) {
 }
 
 func (t *Tracker) RemoveRequest(id string) {
-	t.requestMap.Delete(id)
+	//t.requestMap.Delete(id)
 	//t.responseIdx.Delete(id)
+	t.Delete(id)
+}
+
+func (t *Tracker) Get(key string) (*isb.ReadMessage, bool) {
+	t.lock.RLock()
+	defer t.lock.RUnlock()
+	item, ok := t.m[key]
+	return item, ok
+}
+
+func (t *Tracker) Set(key string, value *isb.ReadMessage) {
+	t.lock.Lock()
+	defer t.lock.Unlock()
+	t.m[key] = value
+}
+
+func (t *Tracker) Delete(key string) {
+	t.lock.Lock()
+	defer t.lock.Unlock()
+	delete(t.m, key)
 }
